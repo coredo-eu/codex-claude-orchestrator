@@ -238,6 +238,7 @@ if [[ "$mode" == "new" ]]; then
     disableClaudeAiConnectors: true,
     disableRemoteControl: true,
     permissions: {
+      defaultMode: "auto",
       disableBypassPermissionsMode: "disable",
       deny: [
         "Edit(/" + $home + "/.claude/**)",

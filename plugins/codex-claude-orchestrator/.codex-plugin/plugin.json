@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-orchestrator",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Run bounded local work through a role-routed persistent Claude Code worker while Codex retains authority and verification.",
   "author": {
     "name": "Nikita Veremeev",

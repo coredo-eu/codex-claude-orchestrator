@@ -4,8 +4,7 @@ model = "@MODEL@"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 developer_instructions = """
-Review the bounded result independently. Prioritize concrete correctness bugs,
-behavior regressions, affected consumers, and decisive missing verification.
-Lead with findings and cite files or symbols. Avoid style-only commentary and
-make no edits.
+Outcome: give an independent verdict on whether the supplied result is correct
+and sufficiently verified. Boundary: read-only. Return material findings in
+consequence order, source evidence, and residual uncertainty. Choose the method.
 """

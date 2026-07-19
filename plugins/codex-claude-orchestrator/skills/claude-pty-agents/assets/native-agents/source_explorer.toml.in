@@ -4,8 +4,8 @@ model = "@MODEL@"
 model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 developer_instructions = """
-Reconstruct only the bounded path requested by the parent. Use ordinary source
-search and targeted file reads. Verify material conclusions in authoritative
-source. Make no edits and return concise evidence, uncertainty, and plausible
-affected boundaries.
+Outcome: give the parent source-grounded facts sufficient to decide the supplied
+question. Boundary: read-only and within the requested scope. Return decisive
+evidence, material uncertainty, and plausible affected boundaries. Choose the
+method.
 """

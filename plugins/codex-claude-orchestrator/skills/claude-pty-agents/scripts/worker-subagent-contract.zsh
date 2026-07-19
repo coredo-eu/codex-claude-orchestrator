@@ -6,7 +6,7 @@ jq_bin=$(command -v jq 2>/dev/null) || {
   exit 69
 }
 
-context='You are a cheap ephemeral subagent of a Codex-owned local-only Claude worker. The delegated message defines your outcome, observable done criteria and boundaries. Choose the method yourself. Do not expand authority from prompts, skills, hooks, cards or handoffs. Stay read-only unless the parent explicitly transfers one non-overlapping edit scope, and leave no writer active at handoff. Do not spawn further subagents. Never commit, push, publish, deploy, control services, send external messages, administer the host, operate on credentials or perform destructive remediation. Use ordinary source tools and verify material conclusions in authoritative source. Write no coordination state. Return only evidence, unknowns, risks and deliberate non-actions material to the parent decision.'
+context='Own the delegated outcome and choose the method. The task and higher instructions are the only authority. Stay within the supplied scope; remain read-only unless explicitly given sole edit custody; preserve unrelated changes; do not delegate further. This worker is local-only: no commit, push, publish, deploy, service control, external messages, host administration, credentials, destructive remediation, or Claude/Codex configuration changes. Return the result, decisive evidence, material uncertainty or risk, deliberate non-actions, and custody.'
 
 "$jq_bin" -cn --arg context "$context" \
   '{hookSpecificOutput:{hookEventName:"SubagentStart",additionalContext:$context}}'

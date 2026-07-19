@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import pty
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 
@@ -26,6 +28,7 @@ LAUNCHER = SCRIPTS / "launch-worker.zsh"
 RETIRE = SCRIPTS / "retire-native-fallback.zsh"
 TOGGLE = SCRIPTS / "toggle-agents.zsh"
 SETUP = SCRIPTS / "setup-native-agents.zsh"
+ROUTER = SCRIPTS / "worker-agent-router.zsh"
 
 
 def require(condition: bool, message: str) -> None:
@@ -119,6 +122,7 @@ payload = {
     "cwd": os.getcwd(),
     "subagent_model": os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"),
     "disable_auto_memory": os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"),
+    "disable_explore_plan": os.environ.get("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS"),
     "disable_git_instructions": os.environ.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"),
 }
 tmp = record.with_suffix(".tmp")
@@ -153,6 +157,57 @@ def main() -> int:
     git = shutil.which("git")
     require(bool(zsh and jq and git), "zsh, jq, and git are required for runtime tests")
 
+    route_models = {
+        "explorer": "haiku",
+        "log-analyzer": "haiku",
+        "test-triager": "haiku",
+        "implementer": "sonnet",
+        "debugger": "sonnet",
+        "reviewer": "opus",
+        "security-reviewer": "opus",
+        "long-horizon": "fable",
+    }
+    for role, model in route_models.items():
+        for supplied_model in (None, model):
+            tool_input = {"subagent_type": role, "prompt": "bounded outcome", "description": "test"}
+            if supplied_model is not None:
+                tool_input["model"] = supplied_model
+            routed = subprocess.run(
+                [zsh, str(ROUTER)],
+                input=json.dumps(
+                    {"hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": tool_input}
+                ),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            require(routed.returncode == 0 and not routed.stdout, f"valid route was denied: {role}")
+
+    denied_route_inputs = (
+        json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "explorer", "model": "opus"},
+            }
+        ),
+        json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "general-purpose"},
+            }
+        ),
+        "not-json",
+    )
+    for payload in denied_route_inputs:
+        routed = subprocess.run(
+            [zsh, str(ROUTER)], input=payload, text=True, capture_output=True, check=False
+        )
+        require(routed.returncode == 0, "router failed open through a nonzero hook error")
+        decision = json.loads(routed.stdout)["hookSpecificOutput"]
+        require(decision["permissionDecision"] == "deny", "invalid route was not denied")
+
     with tempfile.TemporaryDirectory(prefix="cco-test-") as temp:
         base = Path(temp).resolve()
         home = base / "home with space"
@@ -173,6 +228,8 @@ def main() -> int:
                 "HOME": str(home),
                 "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
                 "CODEX_THREAD_ID": "integration-thread",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "inherited-global-sentinel",
+                "CODEX_CLAUDE_SUBAGENT_MODEL": "legacy-global-sentinel",
                 "FAKE_CLAUDE_RECORD": str(record),
                 "FAKE_CLAUDE_CHILD_PID": str(child_record),
             }
@@ -188,6 +245,18 @@ def main() -> int:
         worker_uuid = ready["uuid"]
         lease = Path(ready["lease"])
         require(ready["root"] == str(repo), "ready marker did not preserve a root containing spaces")
+        expected_agent_models = {
+            "explorer": "haiku",
+            "log-analyzer": "haiku",
+            "test-triager": "haiku",
+            "implementer": "sonnet",
+            "debugger": "sonnet",
+            "reviewer": "opus",
+            "security-reviewer": "opus",
+            "long-horizon": "fable",
+        }
+        require(ready["runtime_schema"] == "2", "new worker did not report runtime schema 2")
+        require(ready["agent_models"] == expected_agent_models, "ready marker model roster drift")
         wait_for(record)
         wait_for(child_record)
         child_pid = int(child_record.read_text(encoding="utf-8"))
@@ -195,13 +264,45 @@ def main() -> int:
         observed = json.loads(record.read_text(encoding="utf-8"))
         argv = observed["argv"]
         require(observed["cwd"] == str(repo), "fake Claude cwd drift")
-        require(observed["subagent_model"] == "haiku", "Claude subagents were not forced to Haiku")
+        require(observed["subagent_model"] is None, "inherited global Claude model override was not cleared")
         require(observed["disable_auto_memory"] == "1", "auto-memory was not disabled")
+        require(observed["disable_explore_plan"] == "1", "built-in Explore/Plan agents were not disabled")
         require(observed["disable_git_instructions"] == "1", "automatic Git instructions were not disabled")
         require(option_value(argv, "--model") == "opus", "parent model is not Opus")
+        agents = json.loads(option_value(argv, "--agents"))
+        require(
+            {name: definition["model"] for name, definition in agents.items()} == expected_agent_models,
+            "Claude CLI role model map drift",
+        )
+        read_only_roles = (
+            "explorer", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
+        )
+        require(
+            all(agents[role]["tools"] == ["Read", "Grep", "Glob", "Bash"] for role in read_only_roles),
+            "read-only Claude tool boundary drift",
+        )
+        require(
+            all(agents[role].get("permissionMode") == "plan" for role in read_only_roles),
+            "read-only Claude permission mode drift",
+        )
+        require(
+            "Agent" not in {tool for definition in agents.values() for tool in definition["tools"]},
+            "recursive Agent tool enabled",
+        )
         require(option_value(argv, "--setting-sources") == "", "private settings sources were loaded")
         require("--strict-mcp-config" in argv, "strict MCP mode missing")
         require("--dangerously-skip-permissions" not in argv, "permission bypass was enabled")
+        denied_agents = set(argv[argv.index("--disallowedTools") + 1 :])
+        require(
+            {
+                "Agent(Explore)",
+                "Agent(Plan)",
+                "Agent(general-purpose)",
+                "Agent(statusline-setup)",
+                "Agent(claude-code-guide)",
+            }.issubset(denied_agents),
+            "built-in Claude agents were not denied",
+        )
 
         settings_path = Path(option_value(argv, "--settings"))
         prompt_path = Path(option_value(argv, "--append-system-prompt-file"))
@@ -209,15 +310,35 @@ def main() -> int:
         require(str(runtime_dir).startswith(str(home / ".codex/claude-pty-sessions")), "runtime escaped private state")
         require(prompt_path.parent == runtime_dir, "worker does not use one runtime snapshot")
         require(stat.S_IMODE(runtime_dir.stat().st_mode) == 0o700, "runtime directory is not 0700")
-        for path in (settings_path, prompt_path):
+        agents_path = runtime_dir / "worker-agents.json"
+        for path in (settings_path, prompt_path, agents_path):
             require(stat.S_IMODE(path.stat().st_mode) == 0o600, f"snapshot is not 0600: {path.name}")
+        require(json.loads(agents_path.read_text(encoding="utf-8")) == agents, "Claude did not receive roster snapshot")
+        registration_dir = runtime_dir.parent
+        require(
+            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "2",
+            "schema file drift",
+        )
+        require(
+            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.2.0",
+            "runtime version drift",
+        )
         hook_path = runtime_dir / "worker-subagent-contract.zsh"
+        router_path = runtime_dir / "worker-agent-router.zsh"
         require(stat.S_IMODE(hook_path.stat().st_mode) == 0o700, "hook snapshot is not 0700")
+        require(stat.S_IMODE(router_path.stat().st_mode) == 0o700, "router snapshot is not 0700")
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         hook_command = settings["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
         require(
             shlex.split(hook_command) == [zsh, str(hook_path)],
             "settings hook is not pinned to the snapshot",
+        )
+        router_config = settings["hooks"]["PreToolUse"][0]
+        require(router_config["matcher"] == "Agent", "router hook does not match Agent")
+        router_command = router_config["hooks"][0]["command"]
+        require(
+            shlex.split(router_command) == [zsh, str(router_path)],
+            "settings router is not pinned to the snapshot",
         )
         deny_rules = settings["permissions"]["deny"]
         require(
@@ -315,7 +436,10 @@ def main() -> int:
         resumed_argv = resumed_observed["argv"]
         require(option_value(resumed_argv, "--resume") == worker_uuid, "Claude resume argument drift")
         require(option_value(resumed_argv, "--model") == "opus", "resume ignored pinned parent model")
-        require(resumed_observed["subagent_model"] == "haiku", "resume ignored pinned subagent model")
+        require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
+        require(resumed_ready["runtime_schema"] == "2", "resume schema drift")
+        require(resumed_ready["agent_models"] == expected_agent_models, "resume model roster drift")
+        require(json.loads(option_value(resumed_argv, "--agents")) == agents, "resume ignored pinned roster snapshot")
         require(Path(option_value(resumed_argv, "--settings")) == settings_path, "resume settings snapshot drift")
         require(
             Path(option_value(resumed_argv, "--append-system-prompt-file")) == prompt_path,
@@ -406,6 +530,73 @@ def main() -> int:
         os.close(no_thread_master)
         require(no_thread.returncode == 69 and "CODEX_THREAD_ID_MISSING" in no_thread_output, "thread preflight missing")
 
+        # A published v0.1 schema-1 registration keeps its pinned single-model
+        # behavior on resume instead of being silently migrated to schema 2.
+        legacy_repo = base / "legacy schema repo"
+        legacy_repo.mkdir()
+        subprocess.run([git, "init", "-q", "-b", "main", str(legacy_repo)], check=True)
+        legacy_uuid = str(uuid.uuid4())
+        legacy_path_hash = hashlib.sha256(str(legacy_repo).encode()).hexdigest()
+        legacy_thread_hash = hashlib.sha256(env["CODEX_THREAD_ID"].encode()).hexdigest()
+        legacy_registration = home / ".codex/claude-pty-sessions" / legacy_uuid
+        legacy_runtime = legacy_registration / "runtime"
+        legacy_runtime.mkdir(parents=True, mode=0o700)
+        legacy_fields = {
+            "owner_kind": "codex-pty-worker",
+            "root": str(legacy_repo),
+            "path_hash": legacy_path_hash,
+            "thread_hash": legacy_thread_hash,
+            "session_uuid": legacy_uuid,
+            "name": "legacy-schema-worker",
+            "process_group": "999999",
+            "created_at": "fixture",
+            "runtime_schema_version": "1",
+            "runtime_version": "0.1.0",
+            "parent_model": "opus",
+            "subagent_model": "haiku",
+        }
+        for field, value in legacy_fields.items():
+            (legacy_registration / field).write_text(value + "\n", encoding="utf-8")
+        legacy_settings = legacy_runtime / "worker-settings.json"
+        legacy_prompt = legacy_runtime / "worker-system-prompt.txt"
+        legacy_hook = legacy_runtime / "worker-subagent-contract.zsh"
+        legacy_settings.write_text("{}\n", encoding="utf-8")
+        legacy_prompt.write_text("legacy snapshot\n", encoding="utf-8")
+        legacy_hook.write_text("#!/usr/bin/env zsh\nexit 0\n", encoding="utf-8")
+        legacy_settings.chmod(0o600)
+        legacy_prompt.chmod(0o600)
+        legacy_hook.chmod(0o700)
+
+        legacy_record = base / "legacy resume record.json"
+        legacy_env = env.copy()
+        legacy_env["FAKE_CLAUDE_RECORD"] = str(legacy_record)
+        legacy_env["CODEX_CLAUDE_PARENT_MODEL"] = "sonnet"
+        legacy_env["CODEX_CLAUDE_SUBAGENT_MODEL"] = "opus"
+        legacy_env.pop("FAKE_CLAUDE_CHILD_PID")
+        legacy_worker, legacy_master = start_pty(
+            [zsh, str(LAUNCHER), str(legacy_repo), "--resume", legacy_uuid],
+            cwd=legacy_repo,
+            env=legacy_env,
+        )
+        legacy_output = read_pty(legacy_worker, legacy_master, needle="CODEX_PTY_WORKER_READY")
+        require("CODEX_PTY_WORKER_READY" in legacy_output, f"schema-1 worker did not resume: {legacy_output}")
+        legacy_ready_line = next(
+            (line for line in legacy_output.splitlines() if "CODEX_PTY_WORKER_READY " in line), ""
+        )
+        legacy_ready = json.loads(legacy_ready_line.split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
+        require(legacy_ready["runtime_schema"] == "1", "legacy resume was silently migrated")
+        require(legacy_ready["agent_models"] == {"*": "haiku"}, "legacy model snapshot drift")
+        wait_for(legacy_record)
+        legacy_observed = json.loads(legacy_record.read_text(encoding="utf-8"))
+        legacy_argv = legacy_observed["argv"]
+        require(option_value(legacy_argv, "--model") == "opus", "legacy parent snapshot drift")
+        require(legacy_observed["subagent_model"] == "haiku", "legacy subagent snapshot drift")
+        require(legacy_observed["disable_explore_plan"] is None, "legacy built-in routing changed")
+        require("--agents" not in legacy_argv, "legacy resume received a schema-2 roster")
+        legacy_worker.terminate()
+        legacy_worker.wait(timeout=5)
+        os.close(legacy_master)
+
         agent_dir = repo / ".codex/agents"
         dry_run = subprocess.run(
             [zsh, str(SETUP), "--target", "project", "--root", str(repo)],
@@ -416,7 +607,39 @@ def main() -> int:
             check=False,
         )
         require(dry_run.returncode == 0 and "DRY_RUN: no files written" in dry_run.stdout, "native setup dry run failed")
+        expected_native_models = {
+            "source_explorer": "gpt-5.6-luna",
+            "test_runner": "gpt-5.6-luna",
+            "mech_executor": "gpt-5.6-terra",
+            "reviewer": "gpt-5.6-terra",
+            "security_reviewer": "gpt-5.6-sol",
+        }
+        for role, model in expected_native_models.items():
+            require(f"{role}.toml (model={model})" in dry_run.stdout, f"dry-run model drift: {role}")
         require(not agent_dir.exists(), "native setup dry run wrote configuration")
+        override_preview = subprocess.run(
+            [
+                zsh,
+                str(SETUP),
+                "--target",
+                "project",
+                "--root",
+                str(repo),
+                "--model",
+                "uniform-model",
+                "--role-model",
+                "reviewer=review-model",
+            ],
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(override_preview.returncode == 0, f"native override preview failed: {override_preview.stderr}")
+        require("reviewer.toml (model=review-model)" in override_preview.stdout, "role override lost precedence")
+        for role in expected_native_models.keys() - {"reviewer"}:
+            require(f"{role}.toml (model=uniform-model)" in override_preview.stdout, f"uniform override drift: {role}")
         applied = subprocess.run(
             [zsh, str(SETUP), "--target", "project", "--root", str(repo), "--apply", "--yes"],
             cwd=repo,
@@ -437,6 +660,13 @@ def main() -> int:
             ],
             f"unexpected native role set: {installed}",
         )
+        installed_native_models = {
+            path.stem: re.search(
+                r'^model = "([^"]+)"$', path.read_text(encoding="utf-8"), re.MULTILINE
+            ).group(1)
+            for path in agent_dir.glob("*.toml")
+        }
+        require(installed_native_models == expected_native_models, f"native default model map drift: {installed_native_models}")
         before = {path.name: path.read_bytes() for path in agent_dir.glob("*.toml")}
         collision = subprocess.run(
             [zsh, str(SETUP), "--target", "project", "--root", str(repo), "--apply", "--yes"],

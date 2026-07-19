@@ -2,15 +2,36 @@
 set -euo pipefail
 
 usage() {
-  print -u2 -- "usage: setup-native-agents.zsh [--target project|user] [--root <absolute-project-root>] [--model <model>] [--apply [--yes]]"
+  print -u2 -- "usage: setup-native-agents.zsh [--target project|user] [--root <absolute-project-root>] [--model <model>] [--role-model <role=model>]... [--apply [--yes]]"
   exit 64
 }
 
 target="project"
 root="$PWD"
-model=${CODEX_NATIVE_AGENT_MODEL:-gpt-5.4-mini}
+uniform_model=${CODEX_NATIVE_AGENT_MODEL:-}
 apply=0
 yes=0
+roles=(source_explorer mech_executor reviewer security_reviewer test_runner)
+typeset -A default_models selected_models role_overrides
+default_models=(
+  source_explorer gpt-5.6-luna
+  test_runner gpt-5.6-luna
+  mech_executor gpt-5.6-terra
+  reviewer gpt-5.6-terra
+  security_reviewer gpt-5.6-sol
+)
+
+valid_model() {
+  local candidate="$1"
+  [[ -n "$candidate" && ${#candidate} -le 128 && "$candidate" =~ '^[A-Za-z0-9._:-]+$' ]]
+}
+
+valid_role() {
+  case "$1" in
+    source_explorer|mech_executor|reviewer|security_reviewer|test_runner) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 while (( $# > 0 )); do
   case "$1" in
@@ -26,7 +47,17 @@ while (( $# > 0 )); do
       ;;
     --model)
       (( $# >= 2 )) || usage
-      model="$2"
+      uniform_model="$2"
+      shift 2
+      ;;
+    --role-model)
+      (( $# >= 2 )) || usage
+      spec="$2"
+      [[ "$spec" == *=* ]] || usage
+      role_name=${spec%%=*}
+      role_model=${spec#*=}
+      valid_role "$role_name" && valid_model "$role_model" || usage
+      role_overrides[$role_name]="$role_model"
       shift 2
       ;;
     --apply)
@@ -43,15 +74,25 @@ done
 
 [[ "$target" == "project" || "$target" == "user" ]] || usage
 (( yes == 0 || apply == 1 )) || usage
-[[ -n "$model" && ${#model} -le 128 && "$model" =~ '^[A-Za-z0-9._:-]+$' ]] || {
+[[ -z "$uniform_model" ]] || valid_model "$uniform_model" || {
   print -u2 -- "INVALID_NATIVE_AGENT_MODEL"
   exit 64
 }
 
+for role in "${roles[@]}"; do
+  selected_models[$role]="${default_models[$role]}"
+  [[ -z "$uniform_model" ]] || selected_models[$role]="$uniform_model"
+  role_override="${role_overrides[$role]:-}"
+  [[ -z "$role_override" ]] || selected_models[$role]="$role_override"
+  valid_model "${selected_models[$role]}" || {
+    print -u2 -- "INVALID_NATIVE_AGENT_MODEL: role=$role"
+    exit 64
+  }
+done
+
 script_dir=${0:A:h}
 skill_dir=${script_dir:h}
 template_dir="$skill_dir/assets/native-agents"
-roles=(source_explorer mech_executor reviewer security_reviewer test_runner)
 
 if [[ "$target" == "project" ]]; then
   [[ "$root" == /* && -d "$root" ]] || usage
@@ -82,9 +123,8 @@ done
 print -- "Native Codex agent setup"
 print -- "  target: $target"
 print -- "  destination: $destination"
-print -- "  model: $model"
 for role in "${roles[@]}"; do
-  print -- "  create: $destination/$role.toml"
+  print -- "  create: $destination/$role.toml (model=${selected_models[$role]})"
 done
 
 if (( apply == 0 )); then
@@ -152,7 +192,7 @@ done
 for role in "${roles[@]}"; do
   tmp=$(mktemp "$destination/.$role.toml.XXXXXX")
   staged_files+=("$tmp")
-  sed "s/@MODEL@/$model/g" "$template_dir/$role.toml.in" > "$tmp"
+  sed "s/@MODEL@/${selected_models[$role]}/g" "$template_dir/$role.toml.in" > "$tmp"
   /bin/chmod 600 "$tmp"
 done
 

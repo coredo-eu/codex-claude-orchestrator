@@ -35,9 +35,13 @@ path_hash=$(cco_hash "$root")
 claude_bin=$(command -v claude 2>/dev/null) || cco_die 69 "CLAUDE_NOT_FOUND"
 zsh_bin=$(command -v zsh 2>/dev/null) || cco_die 69 "ZSH_NOT_FOUND"
 prompt_file="$skill_dir/assets/worker-system-prompt.txt"
+agents_file="$skill_dir/assets/worker-agents.json"
 subagent_hook="$script_dir/worker-subagent-contract.zsh"
+agent_router="$script_dir/worker-agent-router.zsh"
 [[ -r "$prompt_file" ]] || cco_die 66 "WORKER_PROMPT_MISSING: $prompt_file"
+[[ -r "$agents_file" ]] || cco_die 66 "WORKER_AGENTS_MISSING: $agents_file"
 [[ -x "$subagent_hook" ]] || cco_die 66 "WORKER_SUBAGENT_HOOK_MISSING: $subagent_hook"
+[[ -x "$agent_router" ]] || cco_die 66 "WORKER_AGENT_ROUTER_MISSING: $agent_router"
 
 [[ -t 0 && -t 1 ]] || cco_die 69 "PTY_REQUIRED"
 worker_group=$(cco_process_group $$)
@@ -45,7 +49,8 @@ worker_group=$(cco_process_group $$)
   cco_die 69 "PTY_PROCESS_GROUP_ISOLATION_REQUIRED: pid=$$ pgid=${worker_group:-unknown}; invoke the launcher as the PTY command or with exec"
 
 parent_model=${CODEX_CLAUDE_PARENT_MODEL:-opus}
-subagent_model=${CODEX_CLAUDE_SUBAGENT_MODEL:-haiku}
+runtime_schema="2"
+legacy_subagent_model=""
 
 if [[ "$mode" == "new" ]]; then
   if command -v uuidgen >/dev/null 2>&1; then
@@ -100,17 +105,29 @@ if [[ "$mode" == "resume" ]]; then
   [[ ! -e "$registration/retirement.json" ]] || cco_die 77 "CLAUDE_RESUME_RETIRED: uuid=$session_uuid root=$root"
   cco_registration_matches "$registration" "$root" "$path_hash" "$thread_hash" "$session_uuid" || \
     cco_die 77 "CLAUDE_RESUME_OWNERSHIP_UNPROVEN: uuid=$session_uuid root=$root"
-  [[ -r "$registration/runtime_schema_version" && "$(<"$registration/runtime_schema_version")" == "1" ]] || \
+  [[ -r "$registration/runtime_schema_version" ]] || \
     cco_die 77 "CLAUDE_RESUME_SCHEMA_UNSUPPORTED: uuid=$session_uuid"
-  for snapshot in parent_model subagent_model runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh; do
+  runtime_schema=$(<"$registration/runtime_schema_version")
+  case "$runtime_schema" in
+    1)
+      required_snapshots=(parent_model subagent_model runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh)
+      ;;
+    2)
+      required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh)
+      ;;
+    *) cco_die 77 "CLAUDE_RESUME_SCHEMA_UNSUPPORTED: uuid=$session_uuid schema=$runtime_schema" ;;
+  esac
+  for snapshot in "${required_snapshots[@]}"; do
     [[ -r "$registration/$snapshot" ]] || cco_die 77 "CLAUDE_RESUME_SNAPSHOT_INCOMPLETE: uuid=$session_uuid missing=$snapshot"
   done
   parent_model=$(<"$registration/parent_model")
-  subagent_model=$(<"$registration/subagent_model")
+  if [[ "$runtime_schema" == "1" ]]; then
+    legacy_subagent_model=$(<"$registration/subagent_model")
+  fi
 fi
 
 cco_validate_model "$parent_model" || cco_die 64 "INVALID_PARENT_MODEL"
-cco_validate_model "$subagent_model" || cco_die 64 "INVALID_SUBAGENT_MODEL"
+[[ "$runtime_schema" != "1" ]] || cco_validate_model "$legacy_subagent_model" || cco_die 64 "INVALID_SUBAGENT_MODEL"
 
 for other_lease in "$CCO_LEASE_ROOT"/*(N/); do
   [[ "$other_lease" != "$lease" ]] || continue
@@ -171,8 +188,8 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$worker_name" > "$registration/name"
   print -r -- "$worker_group" > "$registration/process_group"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$registration/created_at"
-  print -r -- "1" > "$registration/runtime_schema_version"
-  print -r -- "0.1.0" > "$registration/runtime_version"
+  print -r -- "2" > "$registration/runtime_schema_version"
+  print -r -- "0.2.0" > "$registration/runtime_version"
 else
   process_group_tmp=$(mktemp "$registration/.process-group.XXXXXX")
   print -r -- "$worker_group" > "$process_group_tmp"
@@ -184,7 +201,9 @@ runtime_dir="$registration/runtime"
 /bin/mkdir -p -- "$runtime_dir"
 runtime_prompt="$runtime_dir/worker-system-prompt.txt"
 runtime_hook="$runtime_dir/worker-subagent-contract.zsh"
+runtime_agent_router="$runtime_dir/worker-agent-router.zsh"
 runtime_settings="$runtime_dir/worker-settings.json"
+runtime_agents="$runtime_dir/worker-agents.json"
 settings_tmp=""
 cleanup_runtime_tmp() {
   [[ -n "${settings_tmp:-}" && -e "$settings_tmp" ]] && /bin/rm -f -- "$settings_tmp"
@@ -196,15 +215,21 @@ trap 'cleanup_runtime_tmp; cleanup_gate; exit 143' TERM
 
 if [[ "$mode" == "new" ]]; then
   /bin/cp -- "$prompt_file" "$runtime_prompt"
+  /bin/cp -- "$agents_file" "$runtime_agents"
   /bin/cp -- "$subagent_hook" "$runtime_hook"
+  /bin/cp -- "$agent_router" "$runtime_agent_router"
   /bin/chmod 600 "$runtime_prompt"
+  /bin/chmod 600 "$runtime_agents"
   /bin/chmod 700 "$runtime_hook"
+  /bin/chmod 700 "$runtime_agent_router"
   /bin/chmod 700 "$runtime_dir"
   hook_command="${(q)zsh_bin} ${(q)runtime_hook}"
+  router_command="${(q)zsh_bin} ${(q)runtime_agent_router}"
   settings_tmp=$(mktemp "$runtime_dir/.worker-settings.XXXXXX")
 
   "$CCO_JQ" -n \
     --arg hook "$hook_command" \
+    --arg router "$router_command" \
     --arg home "$CCO_HOME" \
     --arg root "$root" '
   {
@@ -229,6 +254,10 @@ if [[ "$mode" == "new" ]]; then
       ]
     },
     hooks: {
+      PreToolUse: [{
+        matcher: "Agent",
+        hooks: [{type: "command", command: $router, timeout: 5}]
+      }],
       SubagentStart: [{
         hooks: [{type: "command", command: $hook, timeout: 5}]
       }]
@@ -240,7 +269,47 @@ if [[ "$mode" == "new" ]]; then
   settings_tmp=""
 
   print -r -- "$parent_model" > "$registration/parent_model"
-  print -r -- "$subagent_model" > "$registration/subagent_model"
+fi
+
+if [[ "$runtime_schema" == "2" ]]; then
+  "$CCO_JQ" -e '
+    type == "object" and
+    (keys | sort) == [
+      "debugger", "explorer", "implementer", "log-analyzer",
+      "long-horizon", "reviewer", "security-reviewer", "test-triager"
+    ] and
+    .explorer.model == "haiku" and
+    .["log-analyzer"].model == "haiku" and
+    .["test-triager"].model == "haiku" and
+    .implementer.model == "sonnet" and
+    .debugger.model == "sonnet" and
+    .reviewer.model == "opus" and
+    .["security-reviewer"].model == "opus" and
+    .["long-horizon"].model == "fable" and
+    .explorer.tools == ["Read", "Grep", "Glob", "Bash"] and
+    .["log-analyzer"].tools == ["Read", "Grep", "Glob", "Bash"] and
+    .["test-triager"].tools == ["Read", "Grep", "Glob", "Bash"] and
+    .implementer.tools == ["Read", "Grep", "Glob", "Edit", "Write", "Bash"] and
+    .debugger.tools == ["Read", "Grep", "Glob", "Bash"] and
+    .reviewer.tools == ["Read", "Grep", "Glob", "Bash"] and
+    .["security-reviewer"].tools == ["Read", "Grep", "Glob", "Bash"] and
+    .["long-horizon"].tools == ["Read", "Grep", "Glob", "Edit", "Write", "Bash"] and
+    all(to_entries[];
+      (.value.description | type) == "string" and
+      (.value.prompt | type) == "string" and
+      (if (.key == "implementer" or .key == "long-horizon") then
+        (.value | keys | sort) == ["description", "model", "prompt", "tools"]
+      else
+        (.value | keys | sort) == ["description", "model", "permissionMode", "prompt", "tools"] and
+        .value.permissionMode == "plan"
+      end)
+    )
+  ' "$runtime_agents" >/dev/null || cco_die 66 "WORKER_AGENTS_INVALID: $runtime_agents"
+  agents_json=$(<"$runtime_agents")
+  agent_models=$("$CCO_JQ" -c 'with_entries(.value = .value.model)' "$runtime_agents")
+else
+  agents_json=""
+  agent_models=$("$CCO_JQ" -cn --arg model "$legacy_subagent_model" '{"*":$model}')
 fi
 
 deny_rules=(
@@ -271,6 +340,13 @@ deny_rules=(
   'Bash(kill *)' 'Bash(pkill *)' 'Bash(shutdown *)' 'Bash(reboot *)'
   'Bash(rm -rf *)'
 )
+if [[ "$runtime_schema" == "2" ]]; then
+  deny_rules=(
+    'Agent(Explore)' 'Agent(Plan)' 'Agent(general-purpose)'
+    'Agent(statusline-setup)' 'Agent(claude-code-guide)'
+    "${deny_rules[@]}"
+  )
+fi
 
 session_args=(--session-id "$session_uuid")
 [[ "$mode" == "resume" ]] && session_args=(--resume "$session_uuid")
@@ -283,22 +359,36 @@ ready_json=$("$CCO_JQ" -cn \
   --arg lease "$lease" \
   --arg mode "$mode" \
   --arg parent_model "$parent_model" \
-  --arg subagent_model "$subagent_model" \
-  '{uuid:$uuid,name:$name,root:$root,lease:$lease,mode:$mode,parent_model:$parent_model,subagent_model:$subagent_model}')
+  --arg runtime_schema "$runtime_schema" \
+  --argjson agent_models "$agent_models" \
+  '{uuid:$uuid,name:$name,root:$root,lease:$lease,mode:$mode,runtime_schema:$runtime_schema,parent_model:$parent_model,agent_models:$agent_models}')
 print -- "CODEX_PTY_WORKER_READY $ready_json"
 
 cco_release_gate
 gate_held=0
 trap - EXIT HUP INT TERM
 
-exec env \
+typeset -a model_env agent_args builtin_agent_env
+if [[ "$runtime_schema" == "1" ]]; then
+  model_env=("CLAUDE_CODE_SUBAGENT_MODEL=$legacy_subagent_model")
+  agent_args=()
+  builtin_agent_env=()
+else
+  model_env=(-u CLAUDE_CODE_SUBAGENT_MODEL -u CODEX_CLAUDE_SUBAGENT_MODEL)
+  agent_args=(--agents "$agents_json")
+  builtin_agent_env=(CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1)
+fi
+
+exec /usr/bin/env \
+  "${model_env[@]}" \
   CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 \
+  "${builtin_agent_env[@]}" \
   CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1 \
-  CLAUDE_CODE_SUBAGENT_MODEL="$subagent_model" \
   "$claude_bin" \
   "${session_args[@]}" \
   --name "$worker_name" \
   --model "$parent_model" \
+  "${agent_args[@]}" \
   --no-chrome \
   --ax-screen-reader \
   --setting-sources "" \

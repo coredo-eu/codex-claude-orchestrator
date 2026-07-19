@@ -215,10 +215,12 @@ cco_lease_has_durable_registration() {
   for field in owner_kind root path_hash session_uuid process_group runtime_schema_version runtime_version; do
     [[ -r "$registration/$field" ]] || return 1
   done
+  local runtime_schema
+  runtime_schema=$(<"$registration/runtime_schema_version")
   [[ "$(<"$registration/owner_kind")" == "codex-pty-worker" &&
      "$(<"$registration/root")" == "$root" &&
      "$(<"$registration/path_hash")" == "$path_hash" &&
      "$(<"$registration/session_uuid")" == "$uuid" &&
      "$(<"$registration/process_group")" == "$(<"$lease/process_group")" &&
-     "$(<"$registration/runtime_schema_version")" == "1" ]]
+     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" ) ]]
 }

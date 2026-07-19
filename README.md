@@ -7,7 +7,7 @@ delegation:
 
 1. Codex stays the orchestrator and final verifier.
 2. A persistent Claude Code parent handles one bounded repository outcome.
-3. Claude routes supporting work to a forced-cheap subagent model.
+3. Claude routes supporting work to a least-cost role-specific model.
 4. If Claude cannot safely continue, Codex transfers the unchanged contract to
    a small set of configurable native fallback roles.
 
@@ -18,11 +18,17 @@ an agent platform, an operating-system sandbox, or an authority source.
 flowchart TD
     U[User outcome and exact authority] --> C[Codex orchestrator]
     C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: opus]
-    O -->|read-heavy or bounded support| H[Claude subagents<br/>forced default: haiku]
+    O -->|search / logs / first triage| H[Haiku roles]
+    O -->|implementation / debugging| S[Sonnet roles]
+    O -->|review / security| P[Opus roles]
+    O -->|exceptional long horizon| F[Fable role<br/>Opus parent fallback]
     H -->|distilled evidence| O
+    S -->|bounded result| O
+    P -->|independent findings| O
+    F -->|verified handoff| O
     O -->|terminal handoff + custody return| C
     C -->|independent verification| U
-    C -. Claude unavailable; no live writer .-> N[Native Codex fallback<br/>default: gpt-5.4-mini]
+    C -. Claude unavailable; no live writer .-> N[Native Codex fallback<br/>GPT-5.6 role map]
     N --> E[source_explorer / reviewer<br/>security_reviewer]
     N --> W[one mech_executor]
     N --> T[test_runner after custody return]
@@ -36,10 +42,11 @@ The economic model is role-based, not a promise about a bill:
   conflicts, and the final verdict.
 - One persistent Claude parent amortizes repository context and task setup over
   related follow-ups.
-- `CLAUDE_CODE_SUBAGENT_MODEL` forces supporting Claude work onto the configured
-  cheaper model instead of silently inheriting the parent.
-- Native fallback roles default to a documented smaller Codex model and stay
-  narrow.
+- A session-scoped roster maps discovery and triage to Haiku, ordinary coding
+  and debugging to Sonnet, review to Opus, and exceptional long-horizon work to
+  Fable with an Opus availability fallback.
+- Native fallback maps each narrow role to Luna, Terra, or Sol instead of
+  silently inheriting the main Codex session.
 - Delegation is chosen only when context transfer, coordination, verification,
   and recovery still leave a net cost or elapsed-time benefit.
 
@@ -47,15 +54,29 @@ Parallel agents can consume more tokens than one agent, and model availability
 depends on the user's plans and organization policy. This repository therefore
 publishes no price table or savings percentage.
 
+## Prompt design
+
+The model prompts state the outcome, authority boundary, and evidence expected
+at handoff, then explicitly leave method, decomposition, investigation, and
+verification choices to the model. Routing descriptions explain when a role is
+useful; tool allowlists and runtime controls enforce capabilities. Prompts do
+not duplicate those mechanisms with a hand-written implementation plan.
+
+This follows current guidance to keep strong-model prompts lean and
+outcome-focused. Prescriptive steps remain appropriate only when order itself
+is a real safety or protocol requirement. The self-check enforces compact
+`Outcome` / `Boundary` / `Return` contracts so future edits do not quietly
+restore procedural scaffolding.
+
 ## Status and prerequisites
 
-Version `0.1.0` is an early, local-only release.
+Version `0.2.0` is an early, local-only release.
 
 | Surface | Status |
 | --- | --- |
 | macOS with Claude Code 2.1.215 | Primary development target |
 | Modern Linux with `zsh`, `jq`, Git, `flock`, and `/proc` | Lifecycle tested in CI with fake Claude; real CLI use should be validated locally |
-| Windows / PowerShell | Not supported in v0.1 |
+| Windows / PowerShell | Not supported in v0.2 |
 | Codex surfaces exporting `CODEX_THREAD_ID` to tool shells | Required |
 | Codex surfaces without `CODEX_THREAD_ID` | Unsupported; launcher fails closed |
 
@@ -72,8 +93,8 @@ Required:
 - `lsof` on macOS, or `/proc/<pid>/cwd` on Linux, for process-cwd identity;
 - access to the configured Claude and Codex models.
 
-The launcher requires these Claude flags: `--model`, `--session-id`, `--resume`,
-`--name`, `--settings`, `--setting-sources`, `--strict-mcp-config`,
+The launcher requires these Claude flags: `--model`, `--agents`, `--session-id`,
+`--resume`, `--name`, `--settings`, `--setting-sources`, `--strict-mcp-config`,
 `--append-system-prompt-file`, and `--disallowedTools`. It never bypasses the
 first-launch repository trust dialog; that choice belongs to the user.
 
@@ -83,7 +104,7 @@ Useful preflight from the Codex tool shell:
 test -n "${CODEX_THREAD_ID:-}" || print -u2 -- "CODEX_THREAD_ID is unavailable"
 command -v claude jq zsh git
 claude --version
-claude --help | rg -- '--model|--settings|--setting-sources|--strict-mcp-config|--session-id|--resume|--disallowedTools'
+claude --help | rg -- '--agents|--model|--settings|--setting-sources|--strict-mcp-config|--session-id|--resume|--disallowedTools'
 ```
 
 ## Install from the Git marketplace
@@ -129,19 +150,42 @@ Codex should provide a compact contract with `Outcome`, observable `Done when`,
 `Boundaries`, `Authoritative context`, `Non-goals`, and `Required handoff`. The
 skill handles launch/reuse, task transport, terminal handoff, and safe fallback.
 
-Defaults and non-secret overrides:
+Parent default and non-secret override:
 
 ```zsh
 # Defaults shown explicitly; export only when changing them.
 export CODEX_CLAUDE_PARENT_MODEL=opus
-export CODEX_CLAUDE_SUBAGENT_MODEL=haiku
-export CODEX_NATIVE_AGENT_MODEL=gpt-5.4-mini
 ```
 
-The parent model is passed with `claude --model`. The subagent value is passed
-as `CLAUDE_CODE_SUBAGENT_MODEL`, which has higher model-selection precedence
-than a subagent definition or per-invocation choice. The worker hook also tells
-cheap children not to create another delegation layer.
+The parent model is passed with `claude --model`. The role roster is passed with
+`--agents` from a private runtime snapshot. A `PreToolUse` hook rejects unlisted
+roles and mismatched per-invocation model overrides. The launcher also clears
+inherited `CLAUDE_CODE_SUBAGENT_MODEL` and legacy
+`CODEX_CLAUDE_SUBAGENT_MODEL` values because Claude gives a global override
+higher precedence than per-role definitions. The worker hook prevents another
+delegation layer.
+
+### Claude role routing
+
+| Claude role | Model | Intended work |
+| --- | --- | --- |
+| `explorer` | Haiku | file search, source facts, bounded discovery |
+| `log-analyzer` | Haiku | logs, test output, classification |
+| `test-triager` | Haiku | first pass over failures |
+| `implementer` | Sonnet | ordinary bounded implementation |
+| `debugger` | Sonnet | multi-step diagnosis without source edits |
+| `reviewer` | Opus | complex regressions and architecture review |
+| `security-reviewer` | Opus | security, authorization, and concurrency |
+| `long-horizon` | Fable | exceptionally large autonomous outcomes only |
+
+Claude Code inherits the Opus parent when Fable is outside the account's
+allowed model set. If Fable fails for another availability reason, the parent
+retains the outcome instead of silently routing it to a cheaper role. The
+roster deliberately denies built-in Explore, Plan, general-purpose,
+statusline-setup, and claude-code-guide agents. A runtime hook rejects unlisted
+roles and any per-invocation model override that disagrees with the published
+map. Read-only roles receive Bash under Claude Code's `plan` permission mode so
+they can choose useful diagnostics without receiving normal edit capability.
 
 ### Optional native roles
 
@@ -160,8 +204,10 @@ explicit non-interactive form. A pre-existing target, including a dangling
 symlink, is refused. Final paths are created atomically without replacement; a
 concurrent late collision can leave an earlier role installed, but never
 overwrites the colliding entry. Choose `--target user` only when these roles
-should be personal defaults across repositories. A model can be selected with
-`--model` or `CODEX_NATIVE_AGENT_MODEL`.
+should be personal defaults across repositories. A uniform model can be
+selected with `--model` or `CODEX_NATIVE_AGENT_MODEL`. A repeatable
+`--role-model role=model` overrides one role and takes precedence over a
+uniform override.
 
 The templates are:
 
@@ -172,14 +218,25 @@ The templates are:
 - `test_runner` — write-capable verification only after edit custody returns or
   in an isolated root.
 
+| Native role | Default model | Reasoning effort |
+| --- | --- | --- |
+| `source_explorer` | `gpt-5.6-luna` | `medium` |
+| `test_runner` | `gpt-5.6-luna` | `low` |
+| `mech_executor` | `gpt-5.6-terra` | `medium` |
+| `reviewer` | `gpt-5.6-terra` | `high` |
+| `security_reviewer` | `gpt-5.6-sol` | `high` |
+
+The Codex orchestrator inherits the model of the main Codex session; this
+plugin never pins it.
+
 ## Authority and custody boundaries
 
 | Actor | Owns | Must not do without separate authority |
 | --- | --- | --- |
 | User | Desired outcome and exact authorization | Nothing is inferred from tool availability or old handoffs |
-| Codex orchestrator | Architecture, executor choice, authority expansion, conflicts, independent verification, final verdict | Treat a worker handoff as completion or control standalone Claude |
+| Codex orchestrator | Material architecture or product tradeoffs, executor choice, authority expansion, conflicts, independent verification, final verdict | Treat a worker handoff as completion or control standalone Claude |
 | Codex-owned Claude parent | One bounded local lifecycle in one canonical root | Commit, push, publish, deploy, service control, external messages, host administration, credential operations, destructive remediation, config changes |
-| Claude subagent | One cheap supporting package, read-only unless explicitly given a disjoint edit scope | Expand authority, retain edit custody, recursively delegate, write coordination state |
+| Claude subagent | One role-specific supporting package; only implementer or long-horizon can receive edit custody | Expand authority, overlap another writer, recursively delegate, write coordination state |
 | Native fallback | The same unchanged contract after verified transfer | Overlap a live Claude writer or resume a retired assignment |
 
 One canonical worktree has one edit-capable owner. The launcher creates an
@@ -188,9 +245,12 @@ hash of the current Codex thread. The raw thread identifier is not stored.
 
 A live worker receives a private per-session runtime snapshot with directory
 mode `0700` and file modes `0600`/`0700`: generated settings, worker prompt,
-subagent hook, model choices, schema version, and runtime version. This prevents
-a marketplace update from changing those inputs underneath a live process.
+subagent context hook, agent-routing hook, exact roster, model choices, schema
+version, and runtime version. This prevents a marketplace update from changing
+those inputs underneath a live process.
 Task bodies are sent through the PTY, never process arguments.
+The `--agents` process argument contains only the static roster policy, never a
+task body, repository path, thread identifier, or credential.
 
 ## Disable, fallback, and recovery
 
@@ -231,6 +291,12 @@ cooperative controls, not proof against a process deliberately detached from its
 group; after a crash, lost PTY, or ambiguous identity, stay read-only or use an
 isolated worktree.
 
+Version `0.2.0` creates runtime schema 2. A schema-2 resume reuses the original
+roster snapshot even after plugin updates. Published schema-1 registrations can
+still resume with their original single-subagent-model snapshot; they are never
+silently converted to the new routing. Unversioned legacy registrations are not
+adopted.
+
 ## Uninstall and state cleanup
 
 1. Run `off --stop` and verify no registered worker remains.
@@ -261,6 +327,9 @@ Designed to resist accidental overlap and common authority drift:
 - generated settings deny common configuration edits and the CLI denies common
   external, destructive, publication, and service-control commands;
 - setting sources are empty and no MCP servers are enabled for the worker;
+- inherited global subagent-model overrides are removed for schema-2 workers;
+- built-in Claude agents are denied, and a pre-spawn hook rejects unlisted
+  roles or mismatched model overrides;
 - runtime snapshots are private to the local user and contain no task body or
   credential by design.
 
@@ -269,6 +338,10 @@ Not defended as an OS security boundary:
 - a malicious or compromised repository, shell tool, hook, Claude/Codex binary,
   dependency, or same-user process;
 - Bash variants that evade string-based deny rules;
+- read-only roles retain Bash under `plan` mode; a parent permission mode that
+  takes product-defined precedence can weaken that boundary;
+- per-role routing is enforced by a same-user hook, not an OS or account-level
+  boundary;
 - network egress allowed by the host sandbox;
 - credentials already present in inherited environment variables or readable
   files;
@@ -284,7 +357,7 @@ approval remain user decisions; the launcher does not answer them.
 ## Verification
 
 The self-check uses a clean temporary home and fake Claude process. It verifies
-manifest structure, shell syntax, model separation, snapshot permissions,
+manifest structure, shell syntax, exact role routing, snapshot permissions,
 clean-profile argv/environment, concurrent writer rejection, fail-closed live
 retirement, retired resume rejection, kill-switch behavior, native installer
 safety, and absence of private paths or credential-shaped data.
@@ -300,9 +373,12 @@ calls to either product.
 
 - [Codex plugins](https://learn.chatgpt.com/docs/plugins)
 - [Codex custom subagents and agent files](https://learn.chatgpt.com/docs/agent-configuration/subagents#custom-agents)
+- [OpenAI GPT-5.6 prompting best practices](https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices)
 - [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
 - [Claude Code subagents and model precedence](https://code.claude.com/docs/en/sub-agents)
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks)
+- [Anthropic prompting best practices](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices)
+- [Anthropic prompting Claude Fable 5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5)
 
 ## License
 

@@ -1,14 +1,14 @@
 ---
 name: claude-pty-agents
-description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with a configurable Opus parent, forced-cheap Claude subagents, and native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
+description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with an Opus parent, role-routed Haiku/Sonnet/Opus/Fable subagents, and GPT-5.6 native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
 ---
 
 # Claude PTY agents
 
 Use one persistent Claude Code process per canonical worktree. Keep Codex as the
-owner of intent, architecture, authority, conflicts, independent verification,
-and the final verdict. Treat this skill as transport and custody policy, never
-as additional authority.
+owner of intent, material architecture or product tradeoffs, authority,
+conflicts, independent verification, and the final verdict. Treat this skill as
+transport and custody policy, never as additional authority.
 
 ## Contract and boundaries
 
@@ -58,14 +58,23 @@ const worker = await tools.exec_command({
 });
 ```
 
-The launcher requires `CODEX_THREAD_ID`, defaults the parent to `opus`, and
-forces every Claude subagent to `haiku` using
-`CLAUDE_CODE_SUBAGENT_MODEL`. Override only with non-secret process variables:
+The launcher requires `CODEX_THREAD_ID` and defaults the parent to `opus`.
+Override only the parent with a non-secret process variable:
 
 ```text
 CODEX_CLAUDE_PARENT_MODEL=<alias-or-model-id>
-CODEX_CLAUDE_SUBAGENT_MODEL=<alias-or-model-id>
 ```
+
+The launcher passes a private session-scoped `--agents` roster. Explorer,
+log-analyzer, and test-triager use Haiku; implementer and debugger use Sonnet;
+reviewer and security-reviewer use Opus. Long-horizon uses Claude's official
+Fable model. When Fable is outside the account's allowed model set, Claude Code
+inherits the Opus parent; for other availability failures, the parent retains
+the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted
+roles or mismatched model overrides. Read-only roles receive Bash in `plan`
+mode. The launcher explicitly removes inherited
+`CLAUDE_CODE_SUBAGENT_MODEL` and the legacy `CODEX_CLAUDE_SUBAGENT_MODEL`
+convention because either would collapse the role-specific routing.
 
 The launcher loads no user/project/local settings sources, enables no MCP
 servers, adds a generated private overlay, and does not edit standalone Claude
@@ -147,12 +156,19 @@ activation. Preview first:
 ```
 
 Use `--apply` for interactive confirmation or `--apply --yes` after reviewing
-the dry run. Existing role files are never overwritten. The configurable default
-model is the officially documented `gpt-5.4-mini`:
+the dry run. Existing role files are never overwritten. Defaults are
+role-specific:
 
 ```text
-CODEX_NATIVE_AGENT_MODEL=<supported-model> <skill-dir>/scripts/setup-native-agents.zsh ...
+source_explorer=gpt-5.6-luna   test_runner=gpt-5.6-luna
+mech_executor=gpt-5.6-terra    reviewer=gpt-5.6-terra
+security_reviewer=gpt-5.6-sol
 ```
+
+Use `--model <model>` or `CODEX_NATIVE_AGENT_MODEL` only for an intentional
+uniform override. Use repeatable `--role-model <role=model>` for targeted
+overrides; role overrides take precedence over a uniform override. The Codex
+orchestrator always inherits the main session model and is never pinned here.
 
 To make Claude-first selection durable, review and manually adopt the opt-in
 policy in [references/codex-policy-snippet.md](references/codex-policy-snippet.md).

@@ -4,10 +4,10 @@ model = "@MODEL@"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
-Implement one bounded outcome inside the supplied root and authority contract.
-Act only after the parent explicitly transfers edit custody and confirms no
-Claude writer remains. Preserve unrelated changes. Never commit, push, publish,
-deploy, control services, send external messages, operate on credentials, or
-perform destructive remediation. Return changed artifacts, material checks,
-residual risks, and edit custody.
+Outcome: make the supplied Done when true. Boundary: act only with explicit sole
+edit custody, stay inside the supplied root, preserve unrelated changes, and
+remain local-only; no commit, push, publish, deploy, service control, external
+messages, credentials, or destructive remediation. Return changed artifacts,
+decisive validation, material risk or uncertainty, and edit custody. Choose the
+method.
 """

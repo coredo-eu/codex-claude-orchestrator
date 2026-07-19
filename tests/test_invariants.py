@@ -46,6 +46,7 @@ def main() -> int:
     manifest = json.loads(read(PLUGIN / ".codex-plugin/plugin.json"))
     require(manifest["name"] == PLUGIN.name, "plugin folder and manifest names differ")
     require(re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"]) is not None, "strict semver required")
+    require(manifest["version"] == "0.2.0", "release version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"
@@ -71,24 +72,97 @@ def main() -> int:
     toggle = read(SKILL / "scripts/toggle-agents.zsh")
     setup = read(SKILL / "scripts/setup-native-agents.zsh")
     policy = read(SKILL / "references/codex-policy-snippet.md")
+    agent_roster = json.loads(read(SKILL / "assets/worker-agents.json"))
+
+    expected_agent_models = {
+        "explorer": "haiku",
+        "log-analyzer": "haiku",
+        "test-triager": "haiku",
+        "implementer": "sonnet",
+        "debugger": "sonnet",
+        "reviewer": "opus",
+        "security-reviewer": "opus",
+        "long-horizon": "fable",
+    }
+    expected_agent_tools = {
+        "explorer": ["Read", "Grep", "Glob", "Bash"],
+        "log-analyzer": ["Read", "Grep", "Glob", "Bash"],
+        "test-triager": ["Read", "Grep", "Glob", "Bash"],
+        "implementer": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
+        "debugger": ["Read", "Grep", "Glob", "Bash"],
+        "reviewer": ["Read", "Grep", "Glob", "Bash"],
+        "security-reviewer": ["Read", "Grep", "Glob", "Bash"],
+        "long-horizon": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
+    }
+    require(
+        {name: definition.get("model") for name, definition in agent_roster.items()} == expected_agent_models,
+        "Claude role model map drift",
+    )
+    require(
+        {name: definition.get("tools") for name, definition in agent_roster.items()} == expected_agent_tools,
+        "Claude role tool map drift",
+    )
+    read_only_roles = {
+        "explorer", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
+    }
+    require(
+        {name for name, definition in agent_roster.items() if definition.get("permissionMode") == "plan"}
+        == read_only_roles,
+        "Claude read-only permission map drift",
+    )
+    require(all("Agent" not in definition["tools"] for definition in agent_roster.values()), "recursive Agent tool enabled")
+    require(all(definition.get("description") and definition.get("prompt") for definition in agent_roster.values()), "Claude role contract missing")
+    for name, definition in agent_roster.items():
+        prompt = definition["prompt"]
+        require(prompt.startswith("Outcome:"), f"Claude prompt is not outcome-first: {name}")
+        for marker in ("Boundary:", "Return:", "Choose the method."):
+            require(marker in prompt, f"Claude prompt contract missing {marker}: {name}")
+        require(len(prompt.split()) <= 65, f"Claude prompt is no longer lean: {name}")
+
+    worker_prompt = read(SKILL / "assets/worker-system-prompt.txt")
+    require(worker_prompt.startswith("Outcome:"), "worker prompt is not outcome-first")
+    for heading in ("Authority:", "Boundaries:", "Roster:", "Handoff:"):
+        require(heading in worker_prompt, f"worker prompt contract missing {heading}")
+    require("choose the method" in worker_prompt.casefold(), "worker prompt does not grant method choice")
+    require("launcher enforces their roles and models" in worker_prompt, "runtime routing boundary missing")
+    require(len(worker_prompt.split()) <= 240, "worker prompt is no longer lean")
+
+    hook_text = read(SKILL / "scripts/worker-subagent-contract.zsh")
+    router_text = read(SKILL / "scripts/worker-agent-router.zsh")
+    hook_context = re.search(r"context='([^']+)'", hook_text)
+    require(hook_context is not None, "subagent hook context missing")
+    require("choose the method" in hook_context.group(1).casefold(), "subagent hook prescribes method")
+    require(len(hook_context.group(1).split()) <= 100, "subagent hook context is no longer lean")
+    for role, model in expected_agent_models.items():
+        require(role in router_text and model in router_text, f"router mapping missing: {role}")
+    require('"permissionDecision":"deny"' in router_text, "router lacks a blocking decision")
+    require("subagent_type" in router_text, "router does not inspect the requested role")
 
     require("CODEX_CLAUDE_PARENT_MODEL:-opus" in launcher, "Opus parent default missing")
-    require("CODEX_CLAUDE_SUBAGENT_MODEL:-haiku" in launcher, "Haiku subagent default missing")
-    require('CLAUDE_CODE_SUBAGENT_MODEL="$subagent_model"' in launcher, "subagent environment override missing")
+    require("CODEX_CLAUDE_SUBAGENT_MODEL:-" not in launcher, "legacy global Claude model configuration remains")
+    require("-u CLAUDE_CODE_SUBAGENT_MODEL" in launcher, "inherited global Claude model override is not cleared")
+    require('--agents "$agents_json"' in launcher, "session-scoped Claude roster missing")
+    require("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1" in launcher, "built-in Explore/Plan disable missing")
+    for agent in ("Explore", "Plan", "general-purpose", "statusline-setup", "claude-code-guide"):
+        require(f"Agent({agent})" in launcher, f"built-in Claude agent is not denied: {agent}")
     require('--model "$parent_model"' in launcher, "parent model CLI pin missing")
     require('--setting-sources ""' in launcher, "isolated setting sources missing")
     require("--strict-mcp-config" in launcher, "external MCP configurations are not excluded")
     require("--mcp-config" not in launcher, "launcher must not inject an MCP configuration")
 
-    require("runtime_schema_version" in launcher and 'print -r -- "1"' in launcher, "runtime schema pin missing")
+    require("runtime_schema_version" in launcher and 'print -r -- "2"' in launcher, "runtime schema-2 pin missing")
+    require('print -r -- "0.2.0" > "$registration/runtime_version"' in launcher, "runtime/plugin version drift")
     for snapshot in (
+        "worker-agents.json",
         "worker-system-prompt.txt",
         "worker-subagent-contract.zsh",
+        "worker-agent-router.zsh",
         "worker-settings.json",
     ):
         require(f'runtime/{snapshot}' in launcher or f'runtime_dir/{snapshot}' in launcher or snapshot in launcher, f"snapshot missing: {snapshot}")
     require('--append-system-prompt-file "$runtime_prompt"' in launcher, "live worker does not use prompt snapshot")
     require("$runtime_hook" in launcher, "generated settings do not pin hook snapshot")
+    require("$runtime_agent_router" in launcher, "generated settings do not pin router snapshot")
     require("/bin/chmod 700 \"$runtime_dir\"" in launcher, "runtime directory mode missing")
     require("/bin/chmod 600 \"$runtime_prompt\"" in launcher, "prompt snapshot mode missing")
 
@@ -103,6 +177,7 @@ def main() -> int:
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")
+    require('"$runtime_schema" == "1" || "$runtime_schema" == "2"' in runtime, "durable legacy/current schema support missing")
     require("pgrep" not in toggle and "pkill" not in toggle, "toggle contains a broad process-name matcher")
 
     live_check = retire.index("CLAUDE_RETIRE_WORKER_STILL_LIVE")
@@ -111,15 +186,33 @@ def main() -> int:
     require("cco_lease_is_live" in retire, "retirement does not verify lease identity")
     require("ps -axo pid=" in retire, "retirement lacks missing/stale-lease process scan")
 
-    require("CODEX_NATIVE_AGENT_MODEL:-gpt-5.4-mini" in setup, "documented cheap Codex default missing")
+    expected_native = {
+        "source_explorer": ("gpt-5.6-luna", "medium"),
+        "test_runner": ("gpt-5.6-luna", "low"),
+        "mech_executor": ("gpt-5.6-terra", "medium"),
+        "reviewer": ("gpt-5.6-terra", "high"),
+        "security_reviewer": ("gpt-5.6-sol", "high"),
+    }
+    for role, (model, _) in expected_native.items():
+        require(f"{role} {model}" in setup, f"native default model drift: {role}")
+    require("--role-model" in setup, "native per-role override missing")
+    require("CODEX_NATIVE_AGENT_MODEL" in setup, "native uniform environment override missing")
     require("DRY_RUN: no files written" in setup, "native setup must default to dry run")
     require("REFUSING_TO_OVERWRITE" in setup, "native setup overwrite protection missing")
     require("NATIVE_AGENT_SETUP_BUSY" in setup, "native setup destination lock missing")
     require('/bin/ln -- "$tmp" "$destination/$role.toml"' in setup, "native setup lacks atomic no-replace installation")
-    for role in ("source_explorer", "mech_executor", "reviewer", "security_reviewer", "test_runner"):
+    for role, (_, effort) in expected_native.items():
         template = SKILL / "assets/native-agents" / f"{role}.toml.in"
         require(template.is_file(), f"native role template missing: {role}")
-        require('model = "@MODEL@"' in read(template), f"native role not configurable: {role}")
+        template_text = read(template)
+        require('model = "@MODEL@"' in template_text, f"native role not configurable: {role}")
+        require(f'model_reasoning_effort = "{effort}"' in template_text, f"native reasoning drift: {role}")
+        instructions = re.search(r'developer_instructions = """\n(.*?)\n"""', template_text, re.DOTALL)
+        require(instructions is not None and instructions.group(1).startswith("Outcome:"), f"native prompt not outcome-first: {role}")
+        normalized_instructions = " ".join(instructions.group(1).split())
+        for marker in ("Boundary:", "Return", "Choose the method."):
+            require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
+        require(len(instructions.group(1).split()) <= 85, f"native prompt is no longer lean: {role}")
 
     for phrase in (
         "Codex owns user intent",
@@ -150,6 +243,12 @@ def main() -> int:
     corpus_casefold = corpus.casefold()
     for needle, label in forbidden.items():
         require(needle.casefold() not in corpus_casefold, f"{label} found in repository")
+    removed_name = "code" + "indexer"
+    removed_spaced_name = "code" + " " + "indexer"
+    require(
+        removed_name not in corpus_casefold and removed_spaced_name not in corpus_casefold,
+        "removed semantic-index integration found",
+    )
     require(
         re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", corpus, re.I) is None,
         "concrete session UUID found",

@@ -1,0 +1,174 @@
+---
+name: claude-pty-agents
+description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with a configurable Opus parent, forced-cheap Claude subagents, and native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
+---
+
+# Claude PTY agents
+
+Use one persistent Claude Code process per canonical worktree. Keep Codex as the
+owner of intent, architecture, authority, conflicts, independent verification,
+and the final verdict. Treat this skill as transport and custody policy, never
+as additional authority.
+
+## Contract and boundaries
+
+Give an edit-capable worker one compact contract:
+
+- `Outcome`: state that must become true.
+- `Done when`: observable acceptance criteria.
+- `Boundaries`: exact root, side effects, prohibited actions, and ownership.
+- `Authoritative context`: applicable source-of-truth material and unknowns.
+- `Non-goals`: adjacent work not to absorb.
+- `Required handoff`: material evidence, risk, uncertainty, missing authority,
+  deliberate non-actions, and custody needed for Codex to decide.
+
+The worker is permanently local-only. It cannot commit, push, publish, deploy,
+control services, send external messages, administer the host, operate on
+credentials, modify Claude/Codex configuration, or perform destructive
+remediation. Such work requires separate Codex review and exact current-user
+authorization. Maintain one edit owner per canonical worktree.
+
+The generated settings, deny rules, prompt, and hook are cooperative controls,
+not an OS sandbox. Bash or a malicious repository instruction can bypass path
+rules. Use Codex sandbox/approval policy, source review, and least privilege as
+the actual containment boundary.
+
+## Start or resume
+
+Resolve this skill's directory, then check prerequisites and status:
+
+```text
+<skill-dir>/scripts/toggle-agents.zsh status
+command -v claude jq zsh git
+```
+
+The file `$HOME/.codex/claude-pty-agents.disabled` is the sole ON/OFF state.
+Check it before every launch, resume, assignment, and PTY poll. Do not remove it
+unless the user explicitly asks to enable workers.
+
+Launch only a narrow absolute project root, with an interactive PTY:
+
+```javascript
+const worker = await tools.exec_command({
+  cmd: "exec <skill-dir>/scripts/launch-worker.zsh /absolute/project/root",
+  workdir: "/absolute/project/root",
+  yield_time_ms: 1000,
+  max_output_tokens: 8000,
+  tty: true,
+});
+```
+
+The launcher requires `CODEX_THREAD_ID`, defaults the parent to `opus`, and
+forces every Claude subagent to `haiku` using
+`CLAUDE_CODE_SUBAGENT_MODEL`. Override only with non-secret process variables:
+
+```text
+CODEX_CLAUDE_PARENT_MODEL=<alias-or-model-id>
+CODEX_CLAUDE_SUBAGENT_MODEL=<alias-or-model-id>
+```
+
+The launcher loads no user/project/local settings sources, enables no MCP
+servers, adds a generated private overlay, and does not edit standalone Claude
+configuration. Claude Code may show a repository trust dialog on the first
+launch; the user must decide it interactively. Never bypass it.
+
+Keep the returned PTY `session_id` together with the exact UUID, name, root, and
+lease from the JSON object after `CODEX_PTY_WORKER_READY`. Reuse only that
+current-thread mapping.
+Never use bare `claude -c`, an unqualified `--resume`, or another session.
+
+Resume a dead, registered worker only after validating the same thread/root and
+confirming no native transfer:
+
+```text
+<skill-dir>/scripts/launch-worker.zsh /absolute/project/root --resume <exact-uuid>
+```
+
+## Assign and observe
+
+Wait for the interactive prompt, then send one task body without putting it in a
+process argument. Submit multiline content and the final carriage return
+separately.
+
+```text
+TASK_ID: <unique-id>
+
+Outcome:
+Done when:
+Boundaries:
+Authoritative context:
+Non-goals:
+Known evidence:
+Required handoff:
+
+Work autonomously inside this contract. Preserve unrelated changes. Stop only
+when ready for independent verification, genuinely blocked, or missing a
+material decision or authority. Return one terminal marker after the handoff
+and custody return:
+CODEX_HANDOFF_READY <TASK_ID> <ready_for_verification|blocked>
+```
+
+Before every `write_stdin`, including an empty poll, recheck the kill switch and
+confirm the registration has no `retirement.json`. This is a cooperative
+preflight, not an atomic lock around the external PTY call: a call already in
+flight may finish after `off` returns. A retired UUID receives no new input.
+Accept a handoff only when the task/state marker matches, the full evidence
+precedes it, the prompt returns, all edit/card/phase custody returns, and no
+delegated writer or background child remains. Independently inspect the
+artifacts and choose evidence that resolves material uncertainty around `Done
+when`.
+
+## Native fallback
+
+Fallback transfers ownership; it never duplicates execution. Use it when the
+kill switch is active, Claude/PTY is unavailable, capacity prevents useful work,
+or the exact worker cannot be recovered.
+
+1. Require a clean terminal handoff and prove edit custody has returned. The
+   process-group checks catch same-group descendants, but cooperative policy is
+   not proof against a deliberately detached daemon. After a crash or ambiguous
+   PTY loss, keep native work read-only or move it to an isolated root.
+2. Retire the current registration; the script refuses while any overlapping
+   registered process group is live:
+
+   ```text
+   <skill-dir>/scripts/retire-native-fallback.zsh <absolute-root> <uuid> <task-id>
+   ```
+
+3. Transfer the unchanged outcome and boundaries to one bounded native owner.
+   Add read-only explorer/reviewer roles or a post-custody test runner only when
+   they materially improve confidence.
+
+Optional native role templates are installed separately and never by plugin
+activation. Preview first:
+
+```text
+<skill-dir>/scripts/setup-native-agents.zsh --target project --root <absolute-root>
+```
+
+Use `--apply` for interactive confirmation or `--apply --yes` after reviewing
+the dry run. Existing role files are never overwritten. The configurable default
+model is the officially documented `gpt-5.4-mini`:
+
+```text
+CODEX_NATIVE_AGENT_MODEL=<supported-model> <skill-dir>/scripts/setup-native-agents.zsh ...
+```
+
+To make Claude-first selection durable, review and manually adopt the opt-in
+policy in [references/codex-policy-snippet.md](references/codex-policy-snippet.md).
+The plugin never edits `AGENTS.md`.
+
+## Disable and recover
+
+`toggle-agents.zsh off` creates the kill switch without terminating processes;
+conforming Codex transport refuses calls after its next preflight, while an
+already-started PTY call may complete. `off --stop` additionally sends `TERM` to
+isolated process groups whose live parent identity is verified through this
+runtime's leases, then fails closed if a registered group remains. `on` requires
+an explicit user action. These operations never discover or target standalone
+Claude by process name.
+
+If a PTY handle is lost, do not guess one. Recover only from the exact durable
+current-thread registration after the prior process is proven dead. If identity
+cannot be proven, keep native agents read-only or use an isolated worktree until
+the ambiguity is resolved.

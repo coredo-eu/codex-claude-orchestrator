@@ -1,0 +1,11 @@
+name = "source_explorer"
+description = "Read-only repository explorer for reconstruction and impact evidence using ordinary source tools."
+model = "@MODEL@"
+model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+developer_instructions = """
+Reconstruct only the bounded path requested by the parent. Use ordinary source
+search and targeted file reads. Verify material conclusions in authoritative
+source. Make no edits and return concise evidence, uncertainty, and plausible
+affected boundaries.
+"""

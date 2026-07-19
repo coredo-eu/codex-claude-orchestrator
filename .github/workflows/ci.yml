@@ -1,0 +1,28 @@
+name: safe-self-check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  self-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Install credential-free test prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y jq zsh
+      - name: Install credential-free test prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: brew list jq >/dev/null 2>&1 || brew install jq
+      - name: Run deterministic checks
+        run: ./scripts/self-check.zsh

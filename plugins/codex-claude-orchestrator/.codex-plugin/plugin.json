@@ -1,0 +1,35 @@
+{
+  "name": "codex-claude-orchestrator",
+  "version": "0.1.0",
+  "description": "Run bounded local work through a persistent Claude Code worker while Codex retains authority and verification.",
+  "author": {
+    "name": "Nikita Veremeev",
+    "url": "https://github.com/coredo-eu"
+  },
+  "homepage": "https://github.com/coredo-eu/codex-claude-orchestrator#readme",
+  "repository": "https://github.com/coredo-eu/codex-claude-orchestrator",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "claude-code",
+    "orchestration",
+    "subagents",
+    "pty"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Claude Orchestrator",
+    "shortDescription": "Bounded Codex-to-Claude local delegation",
+    "longDescription": "Adds a custody-aware workflow for persistent Claude Code workers, cheaper Claude subagents, and bounded native Codex fallback roles.",
+    "developerName": "Nikita Veremeev",
+    "category": "Developer Tools",
+    "websiteURL": "https://github.com/coredo-eu/codex-claude-orchestrator",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Delegate this bounded local outcome through Claude and verify the result."
+    ]
+  }
+}

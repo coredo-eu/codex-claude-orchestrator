@@ -1,0 +1,20 @@
+{
+  "name": "codex-claude-orchestrator",
+  "interface": {
+    "displayName": "Codex Claude Orchestrator"
+  },
+  "plugins": [
+    {
+      "name": "codex-claude-orchestrator",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-claude-orchestrator"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

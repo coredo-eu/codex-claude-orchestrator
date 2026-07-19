@@ -1,0 +1,12 @@
+.DS_Store
+*.swp
+*.tmp
+.coverage
+__pycache__/
+.pytest_cache/
+.test-tmp/
+
+# Runtime state belongs under the user's Codex state directory, never in Git.
+.codex/claude-pty-agents.disabled
+.codex/claude-pty-leases/
+.codex/claude-pty-sessions/

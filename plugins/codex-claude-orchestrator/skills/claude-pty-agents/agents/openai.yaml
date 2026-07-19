@@ -1,4 +1,4 @@
 interface:
   display_name: "Claude PTY Agents"
   short_description: "Custody-aware persistent Claude workers"
-  default_prompt: "Use $claude-pty-agents for one bounded local outcome and verify its handoff."
+  default_prompt: "Use $codex-claude-orchestrator:claude-pty-agents for one bounded local outcome and verify its handoff."

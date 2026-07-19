@@ -1,7 +1,7 @@
 {
   "name": "codex-claude-orchestrator",
-  "version": "0.2.1",
-  "description": "Run bounded local work through a role-routed persistent Claude Code worker while Codex retains authority and verification.",
+  "version": "0.2.2",
+  "description": "Let Codex orchestrate persistent Claude Code workers and role-routed GPT/Claude specialists for fast, verified local development.",
   "author": {
     "name": "Nikita Veremeev",
     "url": "https://github.com/coredo-eu"
@@ -19,8 +19,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex Claude Orchestrator",
-    "shortDescription": "Bounded Codex-to-Claude local delegation",
-    "longDescription": "Adds a custody-aware workflow for persistent Claude Code workers, role-routed Claude subagents, and GPT-5.6 native Codex fallback roles.",
+    "shortDescription": "Codex + Claude, role-routed locally",
+    "longDescription": "Keeps Codex in charge of intent and verification while a persistent Opus parent routes discovery, implementation, debugging, review, and security work to Haiku, Sonnet, Opus, or Fable, with GPT-5.6 native fallback roles.",
     "developerName": "Nikita Veremeev",
     "category": "Developer Tools",
     "websiteURL": "https://github.com/coredo-eu/codex-claude-orchestrator",

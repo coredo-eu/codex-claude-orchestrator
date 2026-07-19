@@ -72,7 +72,11 @@ Fable model. When Fable is outside the account's allowed model set, Claude Code
 inherits the Opus parent; for other availability failures, the parent retains
 the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted
 roles or mismatched model overrides. Read-only roles receive Bash in `plan`
-mode. The launcher explicitly removes inherited
+mode when the parent permission mode permits that override. The default parent
+starts in Claude Code Auto Mode to avoid manual approval queues; current Claude
+Code versions make subagents inherit parent Auto Mode, so their remaining
+read-only boundary is the role contract and absence of Edit/Write tools, not an
+OS-enforced Bash sandbox. The launcher explicitly removes inherited
 `CLAUDE_CODE_SUBAGENT_MODEL` and the legacy `CODEX_CLAUDE_SUBAGENT_MODEL`
 convention because either would collapse the role-specific routing.
 

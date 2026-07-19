@@ -2,21 +2,38 @@
 
 [![CI](https://github.com/coredo-eu/codex-claude-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/coredo-eu/codex-claude-orchestrator/actions/workflows/ci.yml)
 
-An installable Codex marketplace plugin for custody-aware, two-level local
-delegation:
+Use Codex and Claude Code as one local engineering system instead of choosing
+between them. Codex keeps user intent, architecture, executor choice, and the
+final verdict. A persistent Claude Code parent retains execution context and
+routes bounded work to Haiku, Sonnet, Opus, or Fable. Native GPT-5.6 roles are
+available as an explicit fallback after Claude returns custody.
 
-1. Codex stays the orchestrator and final verifier.
-2. A persistent Claude Code parent handles one bounded repository outcome.
-3. Claude routes supporting work to a least-cost role-specific model.
-4. If Claude cannot safely continue, Codex transfers the unchanged contract to
-   a small set of configurable native fallback roles.
+The project is an installable Codex marketplace plugin. It is intentionally a
+transport and policy layer: no hosted coordinator, no credential relay, no
+daemon, and no claim to be an operating-system sandbox.
 
-The project is intentionally a transport and policy layer. It is not a daemon,
-an agent platform, an operating-system sandbox, or an authority source.
+## TL;DR
+
+- **Codex remains in charge.** It decides whether delegation is worthwhile and
+  independently verifies the result. Claude is not forced onto every action.
+- **Claude keeps context.** One PTY-backed Opus parent can survive across related
+  tasks instead of rebuilding repository and outcome context every time.
+- **Each model gets the work it fits.** Haiku searches and triages, Sonnet
+  implements and debugs, Opus reviews and synthesizes, and Fable is reserved for
+  exceptional long-horizon work.
+- **Native Codex roles are explicit.** GPT-5.6 Luna, Terra, and Sol are mapped to
+  discovery, verification, implementation, review, and security rather than
+  silently inheriting the main session model.
+- **The whole loop stays local.** The plugin launches the user's authenticated
+  Claude Code CLI and stores private runtime snapshots under Codex state.
+- **It is subscription-first.** Users whose ChatGPT and Claude plans include
+  their respective coding clients can use both official subscriptions without
+  turning this plugin into an API-key broker.
 
 ```mermaid
 flowchart TD
     U[User outcome and exact authority] --> C[Codex orchestrator]
+    C -->|small or orchestrator-owned work| D[Codex works directly]
     C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: opus]
     O -->|search / logs / first triage| H[Haiku roles]
     O -->|implementation / debugging| S[Sonnet roles]
@@ -34,25 +51,156 @@ flowchart TD
     N --> T[test_runner after custody return]
 ```
 
-## Why this shape
+## Why use it
 
-The economic model is role-based, not a promise about a bill:
+- **Better allocation of expensive reasoning.** Strong models spend more time
+  on intent, synthesis, difficult implementation, and review instead of routine
+  file search or log classification.
+- **Less repeated setup.** The Opus parent retains repository and task context,
+  so related follow-ups do not each pay the full cold-start cost.
+- **Higher throughput when work separates cleanly.** Independent discovery,
+  triage, implementation, and review packages can use different contexts and
+  models while Codex keeps one final decision point.
+- **Quality through separation of responsibility.** The worker produces the
+  result and evidence; Codex treats that handoff as a claim to verify, not as
+  automatic completion.
+- **Predictable model routing.** The roster is pinned in a private runtime
+  snapshot. Hidden environment overrides are cleared so a cheap or expensive
+  global default cannot silently collapse every role onto one model.
+- **Lower approval-loop latency.** New Claude PTY parents start in Auto Mode.
+  Product safety classification and the launcher's deny rules still apply, but
+  routine work no longer waits behind a manual permission queue.
+- **Graceful failure.** A kill switch stops new assignments. Native fallback is
+  possible only after Codex proves the Claude writer is gone and custody has
+  returned.
+- **Inspectable local mechanics.** Leases, registrations, prompts, hooks, model
+  maps, and recovery rules live in this repository and local runtime state.
 
-- Codex spends its highest-value context on intent, architecture, authority,
-  conflicts, and the final verdict.
-- One persistent Claude parent amortizes repository context and task setup over
-  related follow-ups.
-- A session-scoped roster maps discovery and triage to Haiku, ordinary coding
-  and debugging to Sonnet, review to Opus, and exceptional long-horizon work to
-  Fable with an Opus availability fallback.
-- Native fallback maps each narrow role to Luna, Terra, or Sol instead of
-  silently inheriting the main Codex session.
-- Delegation is chosen only when context transfer, coordination, verification,
-  and recovery still leave a net cost or elapsed-time benefit.
+These are design benefits, not guaranteed savings. Parallel agents can consume
+more total tokens, delegation has coordination overhead, and a one-line edit may
+be faster in the main Codex session.
 
-Parallel agents can consume more tokens than one agent, and model availability
-depends on the user's plans and organization policy. This repository therefore
-publishes no price table or savings percentage.
+## Two subscriptions, one local workflow
+
+At the currently published US monthly prices, ChatGPT Plus is **$20/month** and
+includes Codex in the CLI, while Claude Pro is **$20/month** and includes Claude
+Code. That makes a subscription-first `$20 + $20` setup possible before taxes,
+optional credits, or higher-capacity plans:
+
+- [OpenAI Codex pricing and plan availability](https://learn.chatgpt.com/docs/pricing)
+- [Anthropic Claude pricing and Claude Code availability](https://claude.com/pricing)
+
+Each product authenticates through its own official client and account. This
+plugin does not copy cookies, forward login credentials, share accounts, convert
+a consumer subscription into an unofficial API, or bypass provider limits.
+Prices, availability, model access, and usage limits can change and vary by
+region or organization. This project makes no legal or terms-of-service
+guarantee; users remain responsible for the rules that apply to their accounts.
+Claude Code also chooses its billing path from its active authentication; an
+inherited API key can select API billing instead of subscription usage. Check
+the active account and billing source in both CLIs before relying on included
+plan usage.
+
+## How a task moves through the system
+
+1. **The user gives Codex an outcome.** Existing repository instructions and
+   exact authorization still apply.
+2. **Codex chooses the executor.** It works directly when delegation overhead
+   would dominate, and chooses Claude only when persistence, specialization, or
+   parallelism should improve total cost or elapsed time without weakening the
+   result.
+3. **Codex creates a bounded contract.** The handoff states the outcome, an
+   observable `Done when`, boundaries, authoritative context, non-goals, and the
+   evidence required back.
+4. **The plugin launches or reuses one worker.** Its registration is bound to
+   the current Codex thread and canonical repository root. A lease prevents a
+   second registered writer in an overlapping worktree.
+5. **The Opus parent owns execution.** It receives the task body through the PTY,
+   never as a process argument, and chooses its own method.
+6. **Claude routes supporting packages.** Search and triage go to Haiku,
+   implementation and debugging to Sonnet, difficult review to Opus, and only
+   exceptional long-horizon work to Fable.
+7. **The worker returns a compact handoff.** It reports changed artifacts,
+   decisive evidence, remaining uncertainty, deliberate non-actions, and edit
+   custody.
+8. **Codex independently verifies.** The orchestrator decides whether the real
+   user outcome is complete and expands verification only while a material
+   uncertainty remains.
+9. **Fallback is an explicit transfer.** If Claude cannot continue, native Codex
+   work starts only after the registered Claude process is gone and its UUID is
+   retired against native fallback.
+
+### Codex does not send every action to Claude
+
+The opt-in policy is an executor-selection objective, not an unconditional
+hook. Codex keeps routine direct work when launching or briefing a worker would
+cost more than doing the task. Codex also retains user intent, material product
+or architecture tradeoffs, authority expansion, conflict resolution,
+independent verification, and the final verdict. Auto Mode changes how an
+already selected Claude worker handles permissions; it does not change who
+selects the worker.
+
+## Agent and model map
+
+### Control plane
+
+| Actor | Model | Responsibility |
+| --- | --- | --- |
+| Codex orchestrator | Main session model; never pinned by this plugin | Intent, architecture, executor choice, authority, independent verification, final verdict |
+| Claude parent | Opus by default | Persistent execution context, decomposition, routing, synthesis, worker handoff |
+
+### Claude execution roles
+
+| Claude role | Model | Intended work |
+| --- | --- | --- |
+| `explorer` | Haiku | file search, source facts, bounded discovery |
+| `log-analyzer` | Haiku | logs, test output, classification |
+| `test-triager` | Haiku | first pass over failures |
+| `implementer` | Sonnet | ordinary bounded implementation |
+| `debugger` | Sonnet | multi-step diagnosis without intended source edits |
+| `reviewer` | Opus | complex regressions and architecture review |
+| `security-reviewer` | Opus | security, authorization, privacy, and concurrency |
+| `long-horizon` | Fable | exceptionally large autonomous outcomes only |
+
+### Optional native Codex fallback roles
+
+| Native role | Model | Reasoning effort | Intended work |
+| --- | --- | --- | --- |
+| `source_explorer` | `gpt-5.6-luna` | `medium` | direct read-only source discovery |
+| `test_runner` | `gpt-5.6-luna` | `low` | bounded verification after edit custody returns |
+| `mech_executor` | `gpt-5.6-terra` | `medium` | sole owner of one bounded implementation |
+| `reviewer` | `gpt-5.6-terra` | `high` | correctness, regression, and evidence review |
+| `security_reviewer` | `gpt-5.6-sol` | `high` | focused security, privacy, credential, and authorization review |
+
+## A concrete example
+
+Suppose the user asks Codex to fix an intermittent authorization regression:
+
+1. Codex determines that the task is bounded but benefits from persistent
+   execution context, then transfers one explicit edit scope to Claude.
+2. The Opus parent asks `explorer` on Haiku to map the relevant code and
+   `test-triager` on Haiku to classify the failure evidence.
+3. `debugger` on Sonnet establishes the likely cause without editing source.
+4. `implementer` on Sonnet receives sole edit custody and makes the bounded
+   change.
+5. The Opus parent may route a focused regression review to `reviewer`, or a
+   security-sensitive boundary to `security-reviewer`.
+6. Claude returns evidence and custody. Codex inspects the real diff and tests,
+   resolves any material uncertainty, and gives the user the final verdict.
+
+The exact decomposition is not hard-coded. The prompts state the outcome and
+boundaries, then let the models choose the method. A simpler task may stay
+entirely in Codex or use only the Claude parent.
+
+## Good fit and poor fit
+
+| Good fit | Poor fit |
+| --- | --- |
+| You already use both Codex and Claude Code | You want every one-line edit delegated automatically |
+| Multi-step repository work benefits from retained context | You need an unattended CI runner rather than an interactive PTY |
+| Search, implementation, and review can be separated cleanly | You require an OS-grade sandbox for an untrusted repository |
+| You want explicit model routing and independent final verification | You need Windows support today |
+| You value local, inspectable orchestration over a hosted agent service | Your Codex surface does not expose `CODEX_THREAD_ID` |
 
 ## Prompt design
 
@@ -70,13 +218,19 @@ restore procedural scaffolding.
 
 ## Status and prerequisites
 
-Version `0.2.0` is an early, local-only release.
+Version `0.2.2` is an early, local-execution release.
+
+"Local execution" describes the orchestration, processes, repository access,
+leases, and custody state. Model requests and supplied content are still handled
+by OpenAI and Anthropic according to the user's product, account, and data
+settings.
 
 | Surface | Status |
 | --- | --- |
 | macOS with Claude Code 2.1.215 | Primary development target |
 | Modern Linux with `zsh`, `jq`, Git, `flock`, and `/proc` | Lifecycle tested in CI with fake Claude; real CLI use should be validated locally |
 | Windows / PowerShell | Not supported in v0.2 |
+| Claude Auto Mode | Requires a supported Claude Code version, provider/model, and any applicable organization enablement |
 | Codex surfaces exporting `CODEX_THREAD_ID` to tool shells | Required |
 | Codex surfaces without `CODEX_THREAD_ID` | Unsupported; launcher fails closed |
 
@@ -142,8 +296,9 @@ rules that need a human merge.
 Ask Codex to use the bundled skill for a bounded local outcome:
 
 ```text
-Use $claude-pty-agents to implement this bounded change. Keep Codex as the
-authority owner and independently verify Claude's handoff.
+Use $codex-claude-orchestrator:claude-pty-agents to implement this bounded
+change. Keep Codex as the authority owner and independently verify Claude's
+handoff.
 ```
 
 Codex should provide a compact contract with `Outcome`, observable `Done when`,
@@ -165,18 +320,7 @@ inherited `CLAUDE_CODE_SUBAGENT_MODEL` and legacy
 higher precedence than per-role definitions. The worker hook prevents another
 delegation layer.
 
-### Claude role routing
-
-| Claude role | Model | Intended work |
-| --- | --- | --- |
-| `explorer` | Haiku | file search, source facts, bounded discovery |
-| `log-analyzer` | Haiku | logs, test output, classification |
-| `test-triager` | Haiku | first pass over failures |
-| `implementer` | Sonnet | ordinary bounded implementation |
-| `debugger` | Sonnet | multi-step diagnosis without source edits |
-| `reviewer` | Opus | complex regressions and architecture review |
-| `security-reviewer` | Opus | security, authorization, and concurrency |
-| `long-horizon` | Fable | exceptionally large autonomous outcomes only |
+### Claude routing details
 
 Claude Code inherits the Opus parent when Fable is outside the account's
 allowed model set. If Fable fails for another availability reason, the parent
@@ -184,8 +328,18 @@ retains the outcome instead of silently routing it to a cheaper role. The
 roster deliberately denies built-in Explore, Plan, general-purpose,
 statusline-setup, and claude-code-guide agents. A runtime hook rejects unlisted
 roles and any per-invocation model override that disagrees with the published
-map. Read-only roles receive Bash under Claude Code's `plan` permission mode so
-they can choose useful diagnostics without receiving normal edit capability.
+map.
+
+The generated worker settings set `permissions.defaultMode` to `auto`. Current
+Claude Code behavior makes subagents inherit parent Auto Mode and ignore their
+per-role `permissionMode`, including the roster's declared `plan` value. Roles
+described as read-only therefore omit Edit and Write and carry an explicit
+read-only contract, but their Bash access remains a cooperative boundary rather
+than an OS-enforced no-write sandbox. Auto Mode reduces permission-queue latency;
+it does not expand the task's authority or bypass the launcher's deny rules.
+Classifier calls count toward Claude usage and can add a round trip for shell,
+network, and other non-routine actions; ordinary reads and in-worktree edits are
+handled without that classifier call under current Claude Code behavior.
 
 ### Optional native roles
 
@@ -218,16 +372,9 @@ The templates are:
 - `test_runner` — write-capable verification only after edit custody returns or
   in an isolated root.
 
-| Native role | Default model | Reasoning effort |
-| --- | --- | --- |
-| `source_explorer` | `gpt-5.6-luna` | `medium` |
-| `test_runner` | `gpt-5.6-luna` | `low` |
-| `mech_executor` | `gpt-5.6-terra` | `medium` |
-| `reviewer` | `gpt-5.6-terra` | `high` |
-| `security_reviewer` | `gpt-5.6-sol` | `high` |
-
-The Codex orchestrator inherits the model of the main Codex session; this
-plugin never pins it.
+The default model and effort map is listed in
+[Agent and model map](#agent-and-model-map). The Codex orchestrator inherits the
+model of the main Codex session; this plugin never pins it.
 
 ## Authority and custody boundaries
 
@@ -291,11 +438,13 @@ cooperative controls, not proof against a process deliberately detached from its
 group; after a crash, lost PTY, or ambiguous identity, stay read-only or use an
 isolated worktree.
 
-Version `0.2.0` creates runtime schema 2. A schema-2 resume reuses the original
-roster snapshot even after plugin updates. Published schema-1 registrations can
-still resume with their original single-subagent-model snapshot; they are never
-silently converted to the new routing. Unversioned legacy registrations are not
-adopted.
+Version `0.2.0` introduced runtime schema 2. Plugin `0.2.2` intentionally keeps
+that runtime compatibility marker: it changes documentation, release metadata,
+and default permission behavior without changing the registration schema. A
+schema-2 resume reuses the original roster and settings snapshot even after
+plugin updates. Published schema-1 registrations can still resume with their
+original single-subagent-model snapshot; they are never silently converted to
+the new routing. Unversioned legacy registrations are not adopted.
 
 ## Uninstall and state cleanup
 
@@ -338,8 +487,9 @@ Not defended as an OS security boundary:
 - a malicious or compromised repository, shell tool, hook, Claude/Codex binary,
   dependency, or same-user process;
 - Bash variants that evade string-based deny rules;
-- read-only roles retain Bash under `plan` mode; a parent permission mode that
-  takes product-defined precedence can weaken that boundary;
+- non-edit roles retain Bash, and parent Auto Mode takes precedence over their
+  declared `plan` value; their read-only behavior is cooperative rather than an
+  OS-enforced filesystem boundary;
 - per-role routing is enforced by a same-user hook, not an OS or account-level
   boundary;
 - network egress allowed by the host sandbox;
@@ -351,8 +501,9 @@ Not defended as an OS security boundary:
 
 Use only trusted repositories, run Codex with least-privilege sandbox and
 network policy, keep secrets out of task contracts, and review generated runtime
-state before sharing diagnostics. The first Claude trust dialog and any later
-approval remain user decisions; the launcher does not answer them.
+state before sharing diagnostics. The first Claude trust dialog and any prompt
+that Auto Mode still surfaces remain user decisions; the launcher never types an
+approval response.
 
 ## Verification
 
@@ -372,9 +523,13 @@ calls to either product.
 ## Official documentation
 
 - [Codex plugins](https://learn.chatgpt.com/docs/plugins)
+- [Codex plan pricing and availability](https://learn.chatgpt.com/docs/pricing)
 - [Codex custom subagents and agent files](https://learn.chatgpt.com/docs/agent-configuration/subagents#custom-agents)
 - [OpenAI GPT-5.6 prompting best practices](https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices)
 - [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+- [Claude plan pricing and Claude Code availability](https://claude.com/pricing)
+- [Using Claude Code with a Claude subscription](https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan)
+- [Claude Code permission modes](https://code.claude.com/docs/en/permission-modes)
 - [Claude Code subagents and model precedence](https://code.claude.com/docs/en/sub-agents)
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 - [Anthropic prompting best practices](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices)

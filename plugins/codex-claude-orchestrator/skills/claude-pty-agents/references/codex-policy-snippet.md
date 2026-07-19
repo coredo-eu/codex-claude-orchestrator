@@ -14,7 +14,8 @@ return evidence; they do not declare the user's outcome complete.
 Choose the executor that minimizes end-to-end model cost and elapsed time while
 preserving correctness, required evidence, safety, authority, and custody. For a
 bounded work package where delegation has net value, prefer the persistent
-Codex-owned Claude worker provided by `$claude-pty-agents`. Keep work in Codex
+Codex-owned Claude worker provided by
+`$codex-claude-orchestrator:claude-pty-agents`. Keep work in Codex
 when orchestrator judgment is material or delegation overhead, risk, or
 unavailability removes that value.
 

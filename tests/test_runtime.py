@@ -328,6 +328,7 @@ def main() -> int:
         require(stat.S_IMODE(hook_path.stat().st_mode) == 0o700, "hook snapshot is not 0700")
         require(stat.S_IMODE(router_path.stat().st_mode) == 0o700, "router snapshot is not 0700")
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        require(settings["permissions"].get("defaultMode") == "auto", "Claude parent auto mode drift")
         hook_command = settings["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
         require(
             shlex.split(hook_command) == [zsh, str(hook_path)],

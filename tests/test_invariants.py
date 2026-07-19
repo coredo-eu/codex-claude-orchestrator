@@ -46,7 +46,7 @@ def main() -> int:
     manifest = json.loads(read(PLUGIN / ".codex-plugin/plugin.json"))
     require(manifest["name"] == PLUGIN.name, "plugin folder and manifest names differ")
     require(re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"]) is not None, "strict semver required")
-    require(manifest["version"] == "0.2.0", "release version drift")
+    require(manifest["version"] == "0.2.2", "release version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"
@@ -147,11 +147,12 @@ def main() -> int:
         require(f"Agent({agent})" in launcher, f"built-in Claude agent is not denied: {agent}")
     require('--model "$parent_model"' in launcher, "parent model CLI pin missing")
     require('--setting-sources ""' in launcher, "isolated setting sources missing")
+    require('defaultMode: "auto"' in launcher, "Claude parent auto mode missing")
     require("--strict-mcp-config" in launcher, "external MCP configurations are not excluded")
     require("--mcp-config" not in launcher, "launcher must not inject an MCP configuration")
 
     require("runtime_schema_version" in launcher and 'print -r -- "2"' in launcher, "runtime schema-2 pin missing")
-    require('print -r -- "0.2.0" > "$registration/runtime_version"' in launcher, "runtime/plugin version drift")
+    require('print -r -- "0.2.0" > "$registration/runtime_version"' in launcher, "runtime schema-2 version drift")
     for snapshot in (
         "worker-agents.json",
         "worker-system-prompt.txt",

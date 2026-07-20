@@ -2,6 +2,16 @@
 
 [![CI](https://github.com/coredo-eu/codex-claude-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/coredo-eu/codex-claude-orchestrator/actions/workflows/ci.yml)
 
+> [!IMPORTANT]
+> **Branch variant — `codeindexer`.** This long-lived variant adds read-only
+> CodeIndexer semantic discovery to the same orchestrator. New workers require
+> an exact credential-free loopback `codeindexer` HTTP `/mcp` entry in
+> `~/.claude.json`; the launcher snapshots only that endpoint and guards an
+> allowlisted read surface. Indexed findings still require source verification.
+> For no MCP dependency, use the separate
+> [`main`](https://github.com/coredo-eu/codex-claude-orchestrator/tree/main)
+> variant. The branches are alternatives and are not intended to be merged.
+
 Use Codex and Claude Code as one local engineering system instead of choosing
 between them. Codex keeps user intent, architecture, executor choice, and the
 final verdict. A persistent Claude Code parent retains execution context and

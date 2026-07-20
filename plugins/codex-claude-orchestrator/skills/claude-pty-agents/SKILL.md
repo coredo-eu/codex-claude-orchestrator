@@ -99,9 +99,35 @@ confirming no native transfer:
 
 ## Assign and observe
 
-Wait for the interactive prompt, then send one task body without putting it in a
-process argument. Submit multiline content and the final carriage return
-separately.
+Wait for the interactive prompt, then run the assignment gate:
+
+```text
+<skill-dir>/scripts/assign-worker.zsh <root> <uuid> <task-id>
+```
+
+If it exits `76`, decide whether the current parent remains useful. To continue,
+rerun once with `--continue-current-context`; that decision remains valid until
+the next completed compaction. Otherwise rotate only after terminal handoff,
+custody return, and process-group death:
+
+```text
+<skill-dir>/scripts/rotate-worker.zsh <root> <uuid> <task-id> \
+  --handoff <ready_for_verification|blocked> --custody-returned
+<skill-dir>/scripts/launch-worker.zsh <root> --successor-of <uuid>
+```
+
+If the gate exits `70`, the observer state is not trustworthy. Do not delete
+its pending marker or continue the parent; use the same handoff, shutdown, and
+rotation boundary.
+
+The old UUID is then non-resumable and each registered successor attempt records
+its lineage without preventing a retry after a failed launch.
+Claude Code still owns compaction; the runtime counts completed `PostCompact`
+events without retaining their summaries.
+
+After a successful gate, immediately recheck the kill switch and retirement
+marker, then send one task body without putting it in a process argument.
+Submit multiline content and the final carriage return separately.
 
 ```text
 TASK_ID: <unique-id>
@@ -121,8 +147,9 @@ and custody return:
 CODEX_HANDOFF_READY <TASK_ID> <ready_for_verification|blocked>
 ```
 
-Before every `write_stdin`, including an empty poll, recheck the kill switch and
-confirm the registration has no `retirement.json`. This is a cooperative
+Before every poll or other `write_stdin`, including an empty poll, recheck the
+kill switch and confirm the registration
+has no `retirement.json`. This is a cooperative
 preflight, not an atomic lock around the external PTY call: a call already in
 flight may finish after `off` returns. A retired UUID receives no new input.
 Accept a handoff only when the task/state marker matches, the full evidence

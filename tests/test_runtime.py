@@ -25,6 +25,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "plugins/codex-claude-orchestrator/skills/claude-pty-agents/scripts"
 LAUNCHER = SCRIPTS / "launch-worker.zsh"
+ASSIGN = SCRIPTS / "assign-worker.zsh"
+ROTATE = SCRIPTS / "rotate-worker.zsh"
+COMPACTION_COUNTER = SCRIPTS / "worker-compaction-counter.zsh"
 RETIRE = SCRIPTS / "retire-native-fallback.zsh"
 TOGGLE = SCRIPTS / "toggle-agents.zsh"
 SETUP = SCRIPTS / "setup-native-agents.zsh"
@@ -103,6 +106,49 @@ def wait_for_process_exit(pid: int, timeout: float = 10.0) -> None:
 def option_value(argv: list[str], option: str) -> str:
     index = argv.index(option)
     return argv[index + 1]
+
+
+def run_assign(
+    zsh: str,
+    repo: Path,
+    worker_uuid: str,
+    task_id: str,
+    env: dict[str, str],
+    *,
+    continue_context: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    command = [zsh, str(ASSIGN), str(repo), worker_uuid, task_id]
+    if continue_context:
+        command.append("--continue-current-context")
+    return subprocess.run(command, cwd=repo, env=env, text=True, capture_output=True, check=False)
+
+
+def marker_payload(completed: subprocess.CompletedProcess[str], marker: str) -> dict:
+    line = next((line for line in completed.stdout.splitlines() if line.startswith(marker + " ")), "")
+    require(bool(line), f"{marker} missing: {completed.stdout} {completed.stderr}")
+    return json.loads(line.split(" ", 1)[1])
+
+
+def run_rotate(
+    zsh: str, repo: Path, worker_uuid: str, task_id: str, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            zsh,
+            str(ROTATE),
+            str(repo),
+            worker_uuid,
+            task_id,
+            "--handoff",
+            "ready_for_verification",
+            "--custody-returned",
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def write_fake_claude(path: Path) -> None:
@@ -255,7 +301,13 @@ def main() -> int:
             "security-reviewer": "opus",
             "long-horizon": "fable",
         }
-        require(ready["runtime_schema"] == "2", "new worker did not report runtime schema 2")
+        require(
+            ready["runtime_schema"] == "3"
+            and ready["context_state"] == "observed"
+            and ready["context_compactions"] == 0
+            and ready["lineage_kind"] == "standalone",
+            f"new worker lifecycle marker drift: {ready}",
+        )
         require(ready["agent_models"] == expected_agent_models, "ready marker model roster drift")
         wait_for(record)
         wait_for(child_record)
@@ -316,17 +368,19 @@ def main() -> int:
         require(json.loads(agents_path.read_text(encoding="utf-8")) == agents, "Claude did not receive roster snapshot")
         registration_dir = runtime_dir.parent
         require(
-            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "2",
+            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "3",
             "schema file drift",
         )
         require(
-            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.2.0",
+            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.3.0",
             "runtime version drift",
         )
         hook_path = runtime_dir / "worker-subagent-contract.zsh"
         router_path = runtime_dir / "worker-agent-router.zsh"
+        compaction_path = runtime_dir / "worker-compaction-counter.zsh"
         require(stat.S_IMODE(hook_path.stat().st_mode) == 0o700, "hook snapshot is not 0700")
         require(stat.S_IMODE(router_path.stat().st_mode) == 0o700, "router snapshot is not 0700")
+        require(stat.S_IMODE(compaction_path.stat().st_mode) == 0o700, "compaction snapshot is not 0700")
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         require(settings["permissions"].get("defaultMode") == "auto", "Claude parent auto mode drift")
         hook_command = settings["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
@@ -341,6 +395,15 @@ def main() -> int:
             shlex.split(router_command) == [zsh, str(router_path)],
             "settings router is not pinned to the snapshot",
         )
+        compact_command = settings["hooks"]["PostCompact"][0]["hooks"][0]["command"]
+        context_dir = registration_dir / "context"
+        require(
+            shlex.split(compact_command) == [zsh, str(compaction_path), str(context_dir)],
+            "PostCompact hook is not pinned to this registration",
+        )
+        require(stat.S_IMODE(context_dir.stat().st_mode) == 0o700, "context directory is not 0700")
+        for path in context_dir.iterdir():
+            require(stat.S_IMODE(path.stat().st_mode) == 0o600, f"context state is not 0600: {path.name}")
         deny_rules = settings["permissions"]["deny"]
         require(
             f"Edit(/{home}/.claude/**)" in deny_rules and f"Edit(/{repo}/.codex/**)" in deny_rules,
@@ -362,6 +425,105 @@ def main() -> int:
             ),
             f"wrong concurrent rejection: {contender_output}",
         )
+
+        # The gate is driven only by completed compactions. It stores one
+        # content-free line per event and one acknowledged generation.
+        first_assignment = run_assign(zsh, repo, worker_uuid, "first-task", env)
+        require(first_assignment.returncode == 0, f"fresh assignment was refused: {first_assignment}")
+
+        summary_sentinel = "SUMMARY-SENTINEL-MUST-NOT-PERSIST"
+        compact_payload = json.dumps(
+            {
+                "hook_event_name": "PostCompact",
+                "session_id": worker_uuid,
+                "trigger": "auto",
+                "compact_summary": summary_sentinel,
+            }
+        )
+        for _ in range(2):
+            observed_compact = subprocess.run(
+                [zsh, str(compaction_path), str(context_dir)],
+                input=compact_payload,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            require(
+                observed_compact.returncode == 0
+                and summary_sentinel not in observed_compact.stdout
+                and summary_sentinel not in observed_compact.stderr,
+                "PostCompact observer exposed its payload",
+            )
+        require(
+            (context_dir / "compactions.log").read_text(encoding="utf-8") == "1\n1\n",
+            "completed compactions were not counted append-only",
+        )
+        persisted = subprocess.run(
+            ["grep", "-rl", summary_sentinel, str(home)], text=True, capture_output=True, check=False
+        )
+        require(not persisted.stdout.strip(), f"compact summary was persisted: {persisted.stdout}")
+
+        gated = run_assign(zsh, repo, worker_uuid, "post-compact-task", env)
+        require(
+            gated.returncode == 76 and "CLAUDE_ASSIGN_DECISION_REQUIRED" in gated.stderr,
+            f"compaction threshold did not close the normal path: {gated}",
+        )
+        decision = marker_payload(gated, "CODEX_PTY_WORKER_DECISION")
+        require(decision["compactions"] == 2 and decision["threshold"] == 2, f"gate marker drift: {decision}")
+
+        continued = run_assign(
+            zsh, repo, worker_uuid, "post-compact-task", env, continue_context=True
+        )
+        require(continued.returncode == 0, f"context continuation was refused: {continued}")
+        continued_payload = marker_payload(continued, "CODEX_PTY_WORKER_ASSIGN")
+        require(
+            continued_payload["continuation_scope"] == "until_next_compaction",
+            f"continuation scope drift: {continued_payload}",
+        )
+        same_generation = run_assign(zsh, repo, worker_uuid, "related-task", env)
+        require(
+            same_generation.returncode == 0,
+            f"acknowledged generation required per-assignment ceremony: {same_generation}",
+        )
+
+        subprocess.run(
+            [zsh, str(compaction_path), str(context_dir)],
+            input=compact_payload,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        next_generation = run_assign(zsh, repo, worker_uuid, "next-generation", env)
+        require(next_generation.returncode == 76, "a new compaction did not reopen the decision gate")
+
+        acknowledged_path = context_dir / "acknowledged_compactions"
+        acknowledged_value = acknowledged_path.read_text(encoding="utf-8")
+        acknowledged_path.write_text("corrupt\n", encoding="utf-8")
+        corrupt_state = run_assign(zsh, repo, worker_uuid, "corrupt-state", env)
+        require(
+            corrupt_state.returncode == 70 and "CLAUDE_ASSIGN_CONTEXT_CORRUPT" in corrupt_state.stderr,
+            "corrupt lifecycle state reset fail-open",
+        )
+        acknowledged_path.write_text(acknowledged_value, encoding="utf-8")
+
+        events_path = context_dir / "compactions.log"
+        events_path.chmod(0o400)
+        failed_observer = subprocess.run(
+            [zsh, str(compaction_path), str(context_dir)],
+            input=compact_payload,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        events_path.chmod(0o600)
+        pending = list(context_dir.glob(".compaction-pending.*"))
+        require(failed_observer.returncode == 0 and len(pending) == 1, "observer append failure was not durable")
+        lost_event = run_assign(zsh, repo, worker_uuid, "lost-event", env)
+        require(
+            lost_event.returncode == 70 and "CLAUDE_ASSIGN_CONTEXT_CORRUPT" in lost_event.stderr,
+            "lost compaction remained fail-open",
+        )
+        pending[0].rmdir()
 
         # Hide the lease to prove retirement also scans the exact registered
         # process and fails closed when lease state is missing.
@@ -438,7 +600,12 @@ def main() -> int:
         require(option_value(resumed_argv, "--resume") == worker_uuid, "Claude resume argument drift")
         require(option_value(resumed_argv, "--model") == "opus", "resume ignored pinned parent model")
         require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
-        require(resumed_ready["runtime_schema"] == "2", "resume schema drift")
+        require(
+            resumed_ready["runtime_schema"] == "3"
+            and resumed_ready["context_state"] == "decision_required"
+            and resumed_ready["context_compactions"] == 3,
+            f"resume lifecycle state drift: {resumed_ready}",
+        )
         require(resumed_ready["agent_models"] == expected_agent_models, "resume model roster drift")
         require(json.loads(option_value(resumed_argv, "--agents")) == agents, "resume ignored pinned roster snapshot")
         require(Path(option_value(resumed_argv, "--settings")) == settings_path, "resume settings snapshot drift")
@@ -514,6 +681,148 @@ def main() -> int:
             "retired assignment resumed",
         )
 
+        # Optional rotation is a custody transition, not an automatic response
+        # to a counter. It requires process death and records explicit lineage attempts.
+        rotation_repo = base / "rotation repo"
+        rotation_repo.mkdir()
+        subprocess.run([git, "init", "-q", "-b", "main", str(rotation_repo)], check=True)
+        rotation_env = env.copy()
+        rotation_env.pop("FAKE_CLAUDE_CHILD_PID", None)
+        rotation_env["FAKE_CLAUDE_RECORD"] = str(base / "rotation record.json")
+        rotation_worker, rotation_master = start_pty(
+            [zsh, str(LAUNCHER), str(rotation_repo)], cwd=rotation_repo, env=rotation_env
+        )
+        rotation_output = read_pty(rotation_worker, rotation_master, needle="CODEX_PTY_WORKER_READY")
+        rotation_ready = json.loads(
+            next(line for line in rotation_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+            .split("CODEX_PTY_WORKER_READY ", 1)[1]
+            .strip()
+        )
+        rotation_uuid = rotation_ready["uuid"]
+        live_rotation = run_rotate(zsh, rotation_repo, rotation_uuid, "rotation-task", rotation_env)
+        require(
+            live_rotation.returncode == 75 and "CLAUDE_ROTATE_WORKER_STILL_LIVE" in live_rotation.stderr,
+            "rotation ignored a live process group",
+        )
+        rotation_worker.terminate()
+        rotation_worker.wait(timeout=5)
+        os.close(rotation_master)
+
+        rotated = run_rotate(zsh, rotation_repo, rotation_uuid, "rotation-task", rotation_env)
+        require(rotated.returncode == 0, f"dead worker could not rotate: {rotated}")
+        rotation_record = marker_payload(rotated, "CODEX_PTY_WORKER_ROTATED")
+        require(
+            rotation_record["state"] == "rotated_context"
+            and rotation_record["attested"]["custody_returned"] is True,
+            f"rotation record drift: {rotation_record}",
+        )
+
+        rotated_resume, rotated_resume_master = start_pty(
+            [zsh, str(LAUNCHER), str(rotation_repo), "--resume", rotation_uuid],
+            cwd=rotation_repo,
+            env=rotation_env,
+        )
+        rotated_resume_output = read_pty(rotated_resume, rotated_resume_master, timeout=10)
+        rotated_resume.wait(timeout=5)
+        os.close(rotated_resume_master)
+        require(
+            rotated_resume.returncode == 77 and "CLAUDE_RESUME_RETIRED" in rotated_resume_output,
+            "rotated UUID resumed",
+        )
+
+        successor_env = rotation_env.copy()
+        successor_env["FAKE_CLAUDE_RECORD"] = str(base / "successor record.json")
+        successor, successor_master = start_pty(
+            [zsh, str(LAUNCHER), str(rotation_repo), "--successor-of", rotation_uuid],
+            cwd=rotation_repo,
+            env=successor_env,
+        )
+        successor_output = read_pty(successor, successor_master, needle="CODEX_PTY_WORKER_READY")
+        successor_ready = json.loads(
+            next(line for line in successor_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+            .split("CODEX_PTY_WORKER_READY ", 1)[1]
+            .strip()
+        )
+        require(
+            successor_ready["lineage_kind"] == "attempt"
+            and successor_ready["predecessor_session_uuid"] == rotation_uuid
+            and successor_ready["lineage_id"] == rotation_record["lineage_id"],
+            f"successor lineage drift: {successor_ready}",
+        )
+        successor.terminate()
+        successor.wait(timeout=5)
+        os.close(successor_master)
+
+        successor_uuid = successor_ready["uuid"]
+        successor_registration = home / ".codex/claude-pty-sessions" / successor_uuid
+        successor_resume_env = successor_env.copy()
+        successor_resume_env["FAKE_CLAUDE_RECORD"] = str(base / "successor resume record.json")
+        successor_resume, successor_resume_master = start_pty(
+            [zsh, str(LAUNCHER), str(rotation_repo), "--resume", successor_uuid],
+            cwd=rotation_repo,
+            env=successor_resume_env,
+        )
+        successor_resume_output = read_pty(
+            successor_resume, successor_resume_master, needle="CODEX_PTY_WORKER_READY"
+        )
+        successor_resume_ready = json.loads(
+            next(line for line in successor_resume_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+            .split("CODEX_PTY_WORKER_READY ", 1)[1]
+            .strip()
+        )
+        require(
+            successor_resume_ready["lineage_kind"] == "attempt"
+            and successor_resume_ready["predecessor_session_uuid"] == rotation_uuid
+            and successor_resume_ready["lineage_id"] == rotation_record["lineage_id"],
+            f"resumed successor lost lineage: {successor_resume_ready}",
+        )
+        successor_resume.terminate()
+        successor_resume.wait(timeout=5)
+        os.close(successor_resume_master)
+
+        predecessor_path = successor_registration / "predecessor_session_uuid"
+        lineage_path = successor_registration / "lineage_id"
+        saved_predecessor = successor_registration / ".saved-predecessor"
+        saved_lineage = successor_registration / ".saved-lineage"
+        predecessor_path.rename(saved_predecessor)
+        lineage_path.rename(saved_lineage)
+        invalid_lineage, invalid_lineage_master = start_pty(
+            [zsh, str(LAUNCHER), str(rotation_repo), "--resume", successor_uuid],
+            cwd=rotation_repo,
+            env=successor_resume_env,
+        )
+        invalid_lineage_output = read_pty(invalid_lineage, invalid_lineage_master, timeout=10)
+        invalid_lineage.wait(timeout=5)
+        os.close(invalid_lineage_master)
+        saved_predecessor.rename(predecessor_path)
+        saved_lineage.rename(lineage_path)
+        require(
+            invalid_lineage.returncode == 77 and "CLAUDE_RESUME_LINEAGE_INVALID" in invalid_lineage_output,
+            "successor resumed after its complete lineage was removed",
+        )
+
+        retry, retry_master = start_pty(
+            [zsh, str(LAUNCHER), str(rotation_repo), "--successor-of", rotation_uuid],
+            cwd=rotation_repo,
+            env=successor_env,
+        )
+        retry_output = read_pty(retry, retry_master, needle="CODEX_PTY_WORKER_READY")
+        retry_ready = json.loads(
+            next(line for line in retry_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+            .split("CODEX_PTY_WORKER_READY ", 1)[1]
+            .strip()
+        )
+        require(
+            retry_ready["uuid"] != successor_ready["uuid"]
+            and retry_ready["lineage_kind"] == "attempt"
+            and retry_ready["predecessor_session_uuid"] == rotation_uuid
+            and retry_ready["lineage_id"] == rotation_record["lineage_id"],
+            f"lineage retry drift: {retry_ready}",
+        )
+        retry.terminate()
+        retry.wait(timeout=5)
+        os.close(retry_master)
+
         off = subprocess.run([zsh, str(TOGGLE), "off"], env=env, text=True, capture_output=True, check=False)
         require(off.returncode == 0 and "transport is blocked" in off.stdout, "kill switch could not be enabled")
         blocked, blocked_master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=env)
@@ -587,6 +896,14 @@ def main() -> int:
         legacy_ready = json.loads(legacy_ready_line.split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
         require(legacy_ready["runtime_schema"] == "1", "legacy resume was silently migrated")
         require(legacy_ready["agent_models"] == {"*": "haiku"}, "legacy model snapshot drift")
+        require(legacy_ready["context_state"] == "unobserved_legacy", "legacy context was claimed fresh")
+        legacy_gate = run_assign(zsh, legacy_repo, legacy_uuid, "legacy-task", legacy_env)
+        require(
+            legacy_gate.returncode == 0
+            and marker_payload(legacy_gate, "CODEX_PTY_WORKER_ASSIGN")["context_state"]
+            == "unobserved_legacy",
+            "legacy session lost productive reuse or was claimed fresh",
+        )
         wait_for(legacy_record)
         legacy_observed = json.loads(legacy_record.read_text(encoding="utf-8"))
         legacy_argv = legacy_observed["argv"]

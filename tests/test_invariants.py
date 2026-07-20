@@ -46,7 +46,7 @@ def main() -> int:
     manifest = json.loads(read(PLUGIN / ".codex-plugin/plugin.json"))
     require(manifest["name"] == PLUGIN.name, "plugin folder and manifest names differ")
     require(re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"]) is not None, "strict semver required")
-    require(manifest["version"] == "0.2.2", "release version drift")
+    require(manifest["version"] == "0.3.0", "release version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"
@@ -68,6 +68,7 @@ def main() -> int:
 
     launcher = read(SKILL / "scripts/launch-worker.zsh")
     runtime = read(SKILL / "scripts/runtime-lib.zsh")
+    rotate = read(SKILL / "scripts/rotate-worker.zsh")
     retire = read(SKILL / "scripts/retire-native-fallback.zsh")
     toggle = read(SKILL / "scripts/toggle-agents.zsh")
     setup = read(SKILL / "scripts/setup-native-agents.zsh")
@@ -151,19 +152,22 @@ def main() -> int:
     require("--strict-mcp-config" in launcher, "external MCP configurations are not excluded")
     require("--mcp-config" not in launcher, "launcher must not inject an MCP configuration")
 
-    require("runtime_schema_version" in launcher and 'print -r -- "2"' in launcher, "runtime schema-2 pin missing")
-    require('print -r -- "0.2.0" > "$registration/runtime_version"' in launcher, "runtime schema-2 version drift")
+    require("runtime_schema_version" in launcher and 'print -r -- "3"' in launcher, "runtime schema-3 pin missing")
+    require('print -r -- "0.3.0" > "$registration/runtime_version"' in launcher, "runtime schema-3 version drift")
     for snapshot in (
         "worker-agents.json",
         "worker-system-prompt.txt",
         "worker-subagent-contract.zsh",
         "worker-agent-router.zsh",
+        "worker-compaction-counter.zsh",
         "worker-settings.json",
     ):
         require(f'runtime/{snapshot}' in launcher or f'runtime_dir/{snapshot}' in launcher or snapshot in launcher, f"snapshot missing: {snapshot}")
     require('--append-system-prompt-file "$runtime_prompt"' in launcher, "live worker does not use prompt snapshot")
     require("$runtime_hook" in launcher, "generated settings do not pin hook snapshot")
     require("$runtime_agent_router" in launcher, "generated settings do not pin router snapshot")
+    require("$runtime_compaction_counter" in launcher, "generated settings do not pin PostCompact observer")
+    require("PostCompact" in launcher, "completed compactions are not observed")
     require("/bin/chmod 700 \"$runtime_dir\"" in launcher, "runtime directory mode missing")
     require("/bin/chmod 600 \"$runtime_prompt\"" in launcher, "prompt snapshot mode missing")
 
@@ -173,20 +177,19 @@ def main() -> int:
     require("LEASE_SCOPE_CONFLICT" in launcher and "LEASE_CONFLICT" in launcher, "single-writer lease checks missing")
     require("PTY_PROCESS_GROUP_ISOLATION_REQUIRED" in launcher, "worker process-group isolation missing")
     require("REGISTRATION_PROCESS_GROUP_CONFLICT" in launcher, "orphan process-group launch check missing")
-    require("cco_process_group_has_live_members" in retire, "retirement lacks descendant process-group check")
+    require("cco_live_overlap_reason" in retire and "cco_live_overlap_reason" in rotate, "custody paths use different liveness proofs")
     require("cco_lease_has_durable_registration" in toggle, "toggle can act outside durable registrations")
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")
-    require('"$runtime_schema" == "1" || "$runtime_schema" == "2"' in runtime, "durable legacy/current schema support missing")
+    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3"' in runtime, "durable legacy/current schema support missing")
     require("pgrep" not in toggle and "pkill" not in toggle, "toggle contains a broad process-name matcher")
 
     live_check = retire.index("CLAUDE_RETIRE_WORKER_STILL_LIVE")
     retirement_write = retire.index("retirement_tmp=$(mktemp")
     require(live_check < retirement_write, "retirement marker can precede live-worker rejection")
-    require("cco_lease_is_live" in retire, "retirement does not verify lease identity")
-    require("ps -axo pid=" in retire, "retirement lacks missing/stale-lease process scan")
-
+    require("cco_lease_is_live" in runtime, "shared liveness proof does not verify lease identity")
+    require("ps -axo pid=" in runtime, "shared liveness proof lacks missing/stale-lease process scan")
     expected_native = {
         "source_explorer": ("gpt-5.6-luna", "medium"),
         "test_runner": ("gpt-5.6-luna", "low"),

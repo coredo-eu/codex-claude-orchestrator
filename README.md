@@ -226,7 +226,7 @@ restore procedural scaffolding.
 
 ## Status and prerequisites
 
-Version `0.2.2` is an early, local-execution release.
+Version `0.3.0` is an early, local-execution release.
 
 "Local execution" describes the orchestration, processes, repository access,
 leases, and custody state. Model requests and supplied content are still handled
@@ -349,6 +349,41 @@ Classifier calls count toward Claude usage and can add a round trip for shell,
 network, and other non-routine actions; ordinary reads and in-worktree edits are
 handled without that classifier call under current Claude Code behavior.
 
+### Persistent-parent context
+
+Claude Code remains the sole owner of context compaction. New runtime-schema-3
+workers add a `PostCompact` observer that appends one literal event marker and
+drains the hook payload without parsing, printing, or retaining
+`compact_summary`.
+
+Before a new assignment, Codex runs:
+
+```zsh
+"$SKILL_DIR/scripts/assign-worker.zsh" <root> <uuid> <task-id>
+```
+
+Two completed compactions are the decision threshold. At the threshold or after
+any later unreviewed compaction, the normal path exits `76`. Codex may
+rotate or rerun with `--continue-current-context`. That acknowledgement covers
+the current compaction count, so related assignments remain convenient until
+another compaction creates a new decision point. Schema-1/2 sessions have no
+observer; they remain usable but are reported as `unobserved_legacy`, never as
+fresh context.
+
+Rotation is optional, not counter-driven. It succeeds only after Codex attests a
+terminal handoff and custody return and the runtime finds no live overlapping
+lease, process group, or exact worker process. The retirement record makes the
+old UUID non-resumable. `launch-worker.zsh --successor-of <uuid>` records each
+registered attempt by storing the predecessor and rotation lineage in the new
+registration. A failed attempt does not reserve the lineage or prevent a retry.
+
+The durable context state is an append-only event log, the last acknowledged
+count, and a content-free pending marker left only when an event append cannot
+complete. It contains no prompt, assignment body, transcript, generated
+summary, or subagent return. Like the
+existing kill switch and leases, the assignment gate is cooperative same-UID
+accounting; it is not a sandbox against a compromised worker.
+
 ### Optional native roles
 
 Codex plugins do not install custom Codex agent files on their own. Preview the
@@ -446,13 +481,12 @@ cooperative controls, not proof against a process deliberately detached from its
 group; after a crash, lost PTY, or ambiguous identity, stay read-only or use an
 isolated worktree.
 
-Version `0.2.0` introduced runtime schema 2. Plugin `0.2.2` intentionally keeps
-that runtime compatibility marker: it changes documentation, release metadata,
-and default permission behavior without changing the registration schema. A
-schema-2 resume reuses the original roster and settings snapshot even after
-plugin updates. Published schema-1 registrations can still resume with their
-original single-subagent-model snapshot; they are never silently converted to
-the new routing. Unversioned legacy registrations are not adopted.
+Version `0.3.0` introduces runtime schema 3 for the content-free compaction
+observer and assignment decision checkpoint. Schema-2 resumes still reuse their
+original roster and settings snapshot, and schema-1 resumes keep their original
+single-subagent-model snapshot. Both remain usable but report context as
+`unobserved_legacy`; neither is silently converted. Unversioned legacy
+registrations are not adopted.
 
 ## Uninstall and state cleanup
 

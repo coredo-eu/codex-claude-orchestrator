@@ -2,25 +2,34 @@
 set -euo pipefail
 
 usage() {
-  print -u2 -- "usage: launch-worker.zsh <absolute-worktree-root> [--resume <worker-uuid>]"
+  print -u2 -- "usage: launch-worker.zsh <absolute-worktree-root> [--resume <worker-uuid> | --successor-of <rotated-uuid>]"
   exit 64
 }
+
+script_dir=${0:A:h}
+skill_dir=${script_dir:h}
+source "$script_dir/runtime-lib.zsh"
 
 (( $# == 1 || $# == 3 )) || usage
 [[ "$1" == /* && -d "$1" ]] || usage
 
 mode="new"
 session_uuid=""
+predecessor_uuid=""
 if (( $# == 3 )); then
-  [[ "$2" == "--resume" ]] || usage
-  print -r -- "$3" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' || usage
-  mode="resume"
-  session_uuid="${3:l}"
+  cco_is_uuid "$3" || usage
+  case "$2" in
+    --resume)
+      mode="resume"
+      session_uuid="${3:l}"
+      ;;
+    --successor-of)
+      predecessor_uuid="${3:l}"
+      ;;
+    *) usage ;;
+  esac
 fi
 
-script_dir=${0:A:h}
-skill_dir=${script_dir:h}
-source "$script_dir/runtime-lib.zsh"
 cco_init
 
 [[ ! -e "$CCO_DISABLED_MARKER" ]] || cco_die 78 "CLAUDE_AGENTS_DISABLED: $CCO_DISABLED_MARKER"
@@ -38,10 +47,12 @@ prompt_file="$skill_dir/assets/worker-system-prompt.txt"
 agents_file="$skill_dir/assets/worker-agents.json"
 subagent_hook="$script_dir/worker-subagent-contract.zsh"
 agent_router="$script_dir/worker-agent-router.zsh"
+compaction_counter="$script_dir/worker-compaction-counter.zsh"
 [[ -r "$prompt_file" ]] || cco_die 66 "WORKER_PROMPT_MISSING: $prompt_file"
 [[ -r "$agents_file" ]] || cco_die 66 "WORKER_AGENTS_MISSING: $agents_file"
 [[ -x "$subagent_hook" ]] || cco_die 66 "WORKER_SUBAGENT_HOOK_MISSING: $subagent_hook"
 [[ -x "$agent_router" ]] || cco_die 66 "WORKER_AGENT_ROUTER_MISSING: $agent_router"
+[[ -x "$compaction_counter" ]] || cco_die 66 "WORKER_COMPACTION_COUNTER_MISSING: $compaction_counter"
 
 [[ -t 0 && -t 1 ]] || cco_die 69 "PTY_REQUIRED"
 worker_group=$(cco_process_group $$)
@@ -49,7 +60,7 @@ worker_group=$(cco_process_group $$)
   cco_die 69 "PTY_PROCESS_GROUP_ISOLATION_REQUIRED: pid=$$ pgid=${worker_group:-unknown}; invoke the launcher as the PTY command or with exec"
 
 parent_model=${CODEX_CLAUDE_PARENT_MODEL:-opus}
-runtime_schema="2"
+runtime_schema="3"
 legacy_subagent_model=""
 
 if [[ "$mode" == "new" ]]; then
@@ -85,6 +96,7 @@ for pid in "${(@f)$(ps -axo pid=,comm= 2>/dev/null | awk '
   fi
 done
 
+context_threshold="$CCO_CONTEXT_COMPACTION_THRESHOLD"
 cco_acquire_gate || cco_die $? "CLAUDE_GATE_BUSY: $CCO_GATE_LOCK"
 gate_held=1
 cleanup_gate() {
@@ -101,6 +113,14 @@ trap 'cleanup_gate; exit 143' TERM
 [[ ! -e "$CCO_DISABLED_MARKER" ]] || cco_die 78 "CLAUDE_AGENTS_DISABLED: $CCO_DISABLED_MARKER"
 /bin/mkdir -p -- "$CCO_LEASE_ROOT" "$CCO_SESSION_ROOT"
 
+lineage_id=""
+registered_lineage_id=""
+lineage_kind=""
+if [[ "$mode" == "new" ]]; then
+  lineage_kind="standalone"
+  [[ -z "$predecessor_uuid" ]] || lineage_kind="attempt"
+fi
+
 if [[ "$mode" == "resume" ]]; then
   [[ ! -e "$registration/retirement.json" ]] || cco_die 77 "CLAUDE_RESUME_RETIRED: uuid=$session_uuid root=$root"
   cco_registration_matches "$registration" "$root" "$path_hash" "$thread_hash" "$session_uuid" || \
@@ -115,6 +135,31 @@ if [[ "$mode" == "resume" ]]; then
     2)
       required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh)
       ;;
+    3)
+      required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh runtime/worker-compaction-counter.zsh)
+      lineage_kind_file="$registration/lineage_kind"
+      [[ -f "$lineage_kind_file" && ! -L "$lineage_kind_file" ]] || \
+        cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid"
+      lineage_kind="$(<"$lineage_kind_file")"
+      predecessor_file="$registration/predecessor_session_uuid"
+      lineage_file="$registration/lineage_id"
+      case "$lineage_kind" in
+        standalone)
+          [[ ! -e "$predecessor_file" && ! -L "$predecessor_file" && ! -e "$lineage_file" && ! -L "$lineage_file" ]] || \
+            cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid"
+          ;;
+        attempt)
+          [[ -f "$predecessor_file" && ! -L "$predecessor_file" && -f "$lineage_file" && ! -L "$lineage_file" ]] || \
+            cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid"
+          predecessor_uuid="$(<"$predecessor_file")"
+          cco_is_uuid "$predecessor_uuid" || cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid"
+          predecessor_uuid="${predecessor_uuid:l}"
+          registered_lineage_id="$(<"$lineage_file")"
+          cco_is_short_text "$registered_lineage_id" 128 || cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid"
+          ;;
+        *) cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid" ;;
+      esac
+      ;;
     *) cco_die 77 "CLAUDE_RESUME_SCHEMA_UNSUPPORTED: uuid=$session_uuid schema=$runtime_schema" ;;
   esac
   for snapshot in "${required_snapshots[@]}"; do
@@ -124,6 +169,22 @@ if [[ "$mode" == "resume" ]]; then
   if [[ "$runtime_schema" == "1" ]]; then
     legacy_subagent_model=$(<"$registration/subagent_model")
   fi
+fi
+
+if [[ -n "$predecessor_uuid" ]]; then
+  predecessor_registration="$CCO_SESSION_ROOT/$predecessor_uuid"
+  cco_registration_matches "$predecessor_registration" "$root" "$path_hash" "$thread_hash" "$predecessor_uuid" || \
+    cco_die 77 "CLAUDE_LINEAGE_OWNERSHIP_UNPROVEN: predecessor=$predecessor_uuid root=$root"
+  predecessor_retirement="$predecessor_registration/retirement.json"
+  [[ -r "$predecessor_retirement" ]] || \
+    cco_die 75 "CLAUDE_LINEAGE_PREDECESSOR_NOT_ROTATED: predecessor=$predecessor_uuid"
+  predecessor_state=$("$CCO_JQ" -r '.state // empty' "$predecessor_retirement" 2>/dev/null || true)
+  [[ "$predecessor_state" == "rotated_context" ]] || \
+    cco_die 75 "CLAUDE_LINEAGE_PREDECESSOR_NOT_ROTATED: predecessor=$predecessor_uuid state=${predecessor_state:-invalid}"
+  lineage_id=$("$CCO_JQ" -r '.lineage_id // empty' "$predecessor_retirement" 2>/dev/null || true)
+  cco_is_short_text "$lineage_id" 128 || cco_die 75 "CLAUDE_LINEAGE_ID_MISSING: predecessor=$predecessor_uuid"
+  [[ -z "$registered_lineage_id" || "$registered_lineage_id" == "$lineage_id" ]] || \
+    cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid predecessor=$predecessor_uuid"
 fi
 
 cco_validate_model "$parent_model" || cco_die 64 "INVALID_PARENT_MODEL"
@@ -188,8 +249,19 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$worker_name" > "$registration/name"
   print -r -- "$worker_group" > "$registration/process_group"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$registration/created_at"
-  print -r -- "2" > "$registration/runtime_schema_version"
-  print -r -- "0.2.0" > "$registration/runtime_version"
+  print -r -- "3" > "$registration/runtime_schema_version"
+  print -r -- "0.3.0" > "$registration/runtime_version"
+  print -r -- "$lineage_kind" > "$registration/lineage_kind"
+  if [[ -n "$predecessor_uuid" ]]; then
+    print -r -- "$predecessor_uuid" > "$registration/predecessor_session_uuid"
+    print -r -- "$lineage_id" > "$registration/lineage_id"
+  fi
+  /bin/mkdir -- "$registration/context"
+  print -r -- "1" > "$registration/context/context_schema_version"
+  : > "$registration/context/compactions.log"
+  print -r -- "0" > "$registration/context/acknowledged_compactions"
+  /bin/chmod 700 "$registration/context"
+  /bin/chmod 600 "$registration/context/"*
 else
   process_group_tmp=$(mktemp "$registration/.process-group.XXXXXX")
   print -r -- "$worker_group" > "$process_group_tmp"
@@ -202,8 +274,11 @@ runtime_dir="$registration/runtime"
 runtime_prompt="$runtime_dir/worker-system-prompt.txt"
 runtime_hook="$runtime_dir/worker-subagent-contract.zsh"
 runtime_agent_router="$runtime_dir/worker-agent-router.zsh"
+runtime_compaction_counter="$runtime_dir/worker-compaction-counter.zsh"
 runtime_settings="$runtime_dir/worker-settings.json"
 runtime_agents="$runtime_dir/worker-agents.json"
+registration_context_dir="$registration/context"
+compaction_command="${(q)zsh_bin} ${(q)runtime_compaction_counter} ${(q)registration_context_dir}"
 settings_tmp=""
 cleanup_runtime_tmp() {
   [[ -n "${settings_tmp:-}" && -e "$settings_tmp" ]] && /bin/rm -f -- "$settings_tmp"
@@ -218,10 +293,12 @@ if [[ "$mode" == "new" ]]; then
   /bin/cp -- "$agents_file" "$runtime_agents"
   /bin/cp -- "$subagent_hook" "$runtime_hook"
   /bin/cp -- "$agent_router" "$runtime_agent_router"
+  /bin/cp -- "$compaction_counter" "$runtime_compaction_counter"
   /bin/chmod 600 "$runtime_prompt"
   /bin/chmod 600 "$runtime_agents"
   /bin/chmod 700 "$runtime_hook"
   /bin/chmod 700 "$runtime_agent_router"
+  /bin/chmod 700 "$runtime_compaction_counter"
   /bin/chmod 700 "$runtime_dir"
   hook_command="${(q)zsh_bin} ${(q)runtime_hook}"
   router_command="${(q)zsh_bin} ${(q)runtime_agent_router}"
@@ -230,6 +307,7 @@ if [[ "$mode" == "new" ]]; then
   "$CCO_JQ" -n \
     --arg hook "$hook_command" \
     --arg router "$router_command" \
+    --arg compaction "$compaction_command" \
     --arg home "$CCO_HOME" \
     --arg root "$root" '
   {
@@ -261,6 +339,9 @@ if [[ "$mode" == "new" ]]; then
       }],
       SubagentStart: [{
         hooks: [{type: "command", command: $hook, timeout: 5}]
+      }],
+      PostCompact: [{
+        hooks: [{type: "command", command: $compaction, timeout: 5}]
       }]
     }
   }
@@ -272,7 +353,7 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$parent_model" > "$registration/parent_model"
 fi
 
-if [[ "$runtime_schema" == "2" ]]; then
+if [[ "$runtime_schema" != "1" ]]; then
   "$CCO_JQ" -e '
     type == "object" and
     (keys | sort) == [
@@ -313,6 +394,21 @@ else
   agent_models=$("$CCO_JQ" -cn --arg model "$legacy_subagent_model" '{"*":$model}')
 fi
 
+if [[ "$runtime_schema" == "3" ]]; then
+  pinned_compaction_command=$("$CCO_JQ" -er '
+    .hooks.PostCompact
+    | select(type == "array" and length == 1)
+    | .[0].hooks
+    | select(type == "array" and length == 1)
+    | .[0]
+    | select(.type == "command" and .timeout == 5)
+    | .command
+  ' "$runtime_settings" 2>/dev/null) || \
+    cco_die 66 "WORKER_COMPACTION_HOOK_INVALID: $runtime_settings"
+  [[ "$pinned_compaction_command" == "$compaction_command" ]] || \
+    cco_die 66 "WORKER_COMPACTION_HOOK_INVALID: $runtime_settings"
+fi
+
 deny_rules=(
   'Bash(git commit *)' 'Bash(git * commit *)'
   'Bash(git push *)' 'Bash(git * push *)'
@@ -337,11 +433,12 @@ deny_rules=(
   'Bash(npm publish *)' 'Bash(pnpm publish *)' 'Bash(yarn npm publish *)'
   'Bash(sudo *)' 'Bash(open *)' 'Bash(osascript *)' 'Bash(crontab *)'
   'Bash(defaults write *)'
+  'Bash(*assign-worker.zsh*)' 'Bash(*rotate-worker.zsh*)'
   'Bash(*retire-native-fallback.zsh*)'
   'Bash(kill *)' 'Bash(pkill *)' 'Bash(shutdown *)' 'Bash(reboot *)'
   'Bash(rm -rf *)'
 )
-if [[ "$runtime_schema" == "2" ]]; then
+if [[ "$runtime_schema" != "1" ]]; then
   deny_rules=(
     'Agent(Explore)' 'Agent(Plan)' 'Agent(general-purpose)'
     'Agent(statusline-setup)' 'Agent(claude-code-guide)'
@@ -353,6 +450,25 @@ session_args=(--session-id "$session_uuid")
 [[ "$mode" == "resume" ]] && session_args=(--resume "$session_uuid")
 
 [[ ! -e "$CCO_DISABLED_MARKER" ]] || cco_die 78 "CLAUDE_AGENTS_DISABLED: $CCO_DISABLED_MARKER"
+
+context_compactions=0
+context_acknowledged=0
+if [[ "$runtime_schema" == "3" ]]; then
+  context_counts=$(cco_context_counts "$registration") || \
+    cco_die 70 "CLAUDE_CONTEXT_CORRUPT: uuid=$session_uuid"
+  context_compactions="${context_counts%% *}"
+  context_acknowledged="${context_counts##* }"
+  if (( context_compactions < context_threshold )); then
+    context_state="observed"
+  elif (( context_acknowledged == context_compactions )); then
+    context_state="continued"
+  else
+    context_state="decision_required"
+  fi
+else
+  context_state="unobserved_legacy"
+fi
+
 ready_json=$("$CCO_JQ" -cn \
   --arg uuid "$session_uuid" \
   --arg name "$worker_name" \
@@ -361,9 +477,21 @@ ready_json=$("$CCO_JQ" -cn \
   --arg mode "$mode" \
   --arg parent_model "$parent_model" \
   --arg runtime_schema "$runtime_schema" \
+  --arg context_state "$context_state" \
+  --arg lineage_kind "$lineage_kind" \
+  --arg predecessor_uuid "$predecessor_uuid" \
+  --arg lineage_id "$lineage_id" \
+  --argjson context_compactions "$context_compactions" \
+  --argjson context_acknowledged "$context_acknowledged" \
   --argjson agent_models "$agent_models" \
-  '{uuid:$uuid,name:$name,root:$root,lease:$lease,mode:$mode,runtime_schema:$runtime_schema,parent_model:$parent_model,agent_models:$agent_models}')
-print -- "CODEX_PTY_WORKER_READY $ready_json"
+  '{uuid:$uuid,name:$name,root:$root,lease:$lease,mode:$mode,
+    runtime_schema:$runtime_schema,parent_model:$parent_model,agent_models:$agent_models,
+    context_state:$context_state,context_compactions:$context_compactions,
+    context_acknowledged:$context_acknowledged,
+    lineage_kind:(if $lineage_kind == "" then null else $lineage_kind end),
+    predecessor_session_uuid:(if $predecessor_uuid == "" then null else $predecessor_uuid end),
+    lineage_id:(if $lineage_id == "" then null else $lineage_id end)}')
+print -r -- "CODEX_PTY_WORKER_READY $ready_json"
 
 cco_release_gate
 gate_held=0

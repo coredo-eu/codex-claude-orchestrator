@@ -12,6 +12,7 @@ typeset -g CCO_SESSION_ROOT=""
 typeset -g CCO_JQ=""
 typeset -g CCO_GATE_KIND=""
 typeset -g CCO_GATE_FD=""
+typeset -gr CCO_CONTEXT_COMPACTION_THRESHOLD=2
 
 cco_die() {
   local code="$1"
@@ -104,6 +105,17 @@ cco_scope_overlaps() {
   [[ "$left" == "$right" || "$left" == "$right"/* || "$right" == "$left"/* ]]
 }
 
+cco_is_uuid() {
+  local value="$1"
+  [[ "$value" != *$'\n'* ]] || return 1
+  print -r -- "$value" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+}
+
+cco_is_short_text() {
+  local value="$1" limit="$2"
+  [[ -n "$value" && ${#value} -le "$limit" && "$value" != *$'\n'* ]]
+}
+
 cco_validate_model() {
   local model="$1"
   [[ -n "$model" && ${#model} -le 128 && "$model" != *$'\n'* && "$model" =~ '^[A-Za-z0-9._:-]+$' ]]
@@ -169,6 +181,70 @@ cco_release_gate() {
   CCO_GATE_FD=""
 }
 
+# Print "<completed-compactions> <acknowledged-compactions>". Every completed
+# PostCompact event is one literal line; no summary or task content is stored.
+cco_context_counts() {
+  local registration="$1" context_dir schema events acknowledged pending
+  context_dir="$registration/context"
+  [[ -d "$context_dir" && ! -L "$context_dir" ]] || return 1
+  [[ -w "$context_dir" ]] || return 1
+  for pending in "$context_dir"/.compaction-pending.*(N); do
+    return 1
+  done
+  for file in context_schema_version compactions.log acknowledged_compactions; do
+    [[ -f "$context_dir/$file" && ! -L "$context_dir/$file" ]] || return 1
+  done
+  schema=$(<"$context_dir/context_schema_version")
+  [[ "$schema" == "1" ]] || return 1
+  events=$(awk '$0 != "1" { exit 1 } END { print NR }' "$context_dir/compactions.log") || return 1
+  acknowledged=$(<"$context_dir/acknowledged_compactions")
+  [[ "$events" == <-> && "$acknowledged" == <-> && ${#acknowledged} -le 9 ]] || return 1
+  (( acknowledged <= events )) || return 1
+  print -r -- "$events $acknowledged"
+}
+
+# Return the first live overlapping Codex-owned worker found across leases,
+# registered process groups, and exact process arguments.
+cco_live_overlap_reason() {
+  local root="$1" active_lease active_root active_registration
+  local active_uuid active_name active_group pid args field
+  for active_lease in "$CCO_LEASE_ROOT"/*(N/); do
+    if cco_lease_has_durable_registration "$active_lease" && cco_lease_is_live "$active_lease"; then
+      active_root=$(<"$active_lease/root")
+      if cco_scope_overlaps "$root" "$active_root"; then
+        print -r -- "uuid=$(<"$active_lease/session_uuid") root=$active_root lease=$active_lease"
+        return 0
+      fi
+    fi
+  done
+  for active_registration in "$CCO_SESSION_ROOT"/*(N/); do
+    for field in owner_kind root session_uuid name process_group; do
+      [[ -r "$active_registration/$field" ]] || continue 2
+    done
+    [[ "$(<"$active_registration/owner_kind")" == "codex-pty-worker" ]] || continue
+    active_root=$(<"$active_registration/root")
+    cco_scope_overlaps "$root" "$active_root" || continue
+    active_uuid=$(<"$active_registration/session_uuid")
+    active_name=$(<"$active_registration/name")
+    active_group=$(<"$active_registration/process_group")
+    if cco_process_group_has_live_members "$active_group"; then
+      print -r -- "uuid=$active_uuid root=$active_root pgid=$active_group"
+      return 0
+    fi
+    for pid in "${(@f)$(ps -axo pid= 2>/dev/null || true)}"; do
+      pid=${pid//[[:space:]]/}
+      [[ "$pid" == <-> ]] || continue
+      args=$(cco_process_args "$pid")
+      if [[ "$args" == *"--name $active_name"* &&
+            ( "$args" == *"--session-id $active_uuid"* || "$args" == *"--resume $active_uuid"* ) ]]; then
+        print -r -- "uuid=$active_uuid root=$active_root pid=$pid"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 cco_lease_is_live() {
   local lease="$1" owner_pid owner_start owner_group owner_uuid owner_root owner_name args cwd
   for field in owner_pid process_start process_group session_uuid root name; do
@@ -222,5 +298,5 @@ cco_lease_has_durable_registration() {
      "$(<"$registration/path_hash")" == "$path_hash" &&
      "$(<"$registration/session_uuid")" == "$uuid" &&
      "$(<"$registration/process_group")" == "$(<"$lease/process_group")" &&
-     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" ) ]]
+     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" ) ]]
 }

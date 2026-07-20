@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-orchestrator",
-  "version": "0.3.1",
+  "version": "0.3.1+codex.20260720114558",
   "description": "Let Codex orchestrate persistent Claude Code workers and role-routed GPT/Claude specialists for fast, verified local development.",
   "author": {
     "name": "Nikita Veremeev",

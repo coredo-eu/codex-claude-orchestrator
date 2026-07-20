@@ -45,8 +45,11 @@ def main() -> int:
 
     manifest = json.loads(read(PLUGIN / ".codex-plugin/plugin.json"))
     require(manifest["name"] == PLUGIN.name, "plugin folder and manifest names differ")
-    require(re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"]) is not None, "strict semver required")
-    require(manifest["version"] == "0.3.1", "release version drift")
+    require(
+        re.fullmatch(r"\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?", manifest["version"]) is not None,
+        "strict semver required",
+    )
+    require(manifest["version"].startswith("0.3.1+codex."), "local cachebuster version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"

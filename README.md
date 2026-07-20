@@ -7,7 +7,9 @@
 > persistent Opus parent, role-routed Haiku/Sonnet/Opus/Fable workers, and
 > GPT-5.6 native fallback without enabling any MCP server for Claude workers.
 > Choose it for the smallest runtime and configuration surface with direct
-> source inspection. For guarded CodeIndexer discovery, use the separate
+> source inspection. For guarded discovery through
+> [CodeIndexer](https://codeindexer.dev), a local MCP code-intelligence service
+> for semantic search and call-graph navigation, use the separate
 > [`codeindexer`](https://github.com/coredo-eu/codex-claude-orchestrator/tree/codeindexer)
 > variant. The branches are alternatives and are not intended to be merged.
 

@@ -247,11 +247,15 @@ def main() -> int:
     corpus_casefold = corpus.casefold()
     for needle, label in forbidden.items():
         require(needle.casefold() not in corpus_casefold, f"{label} found in repository")
+    implementation_corpus = "\n".join(
+        read(path) for path in text_files if path != ROOT / "README.md"
+    ).casefold()
     removed_name = "code" + "indexer"
     removed_spaced_name = "code" + " " + "indexer"
     require(
-        removed_name not in corpus_casefold and removed_spaced_name not in corpus_casefold,
-        "removed semantic-index integration found",
+        removed_name not in implementation_corpus
+        and removed_spaced_name not in implementation_corpus,
+        "removed semantic-index integration found outside the branch description",
     )
     require(
         re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", corpus, re.I) is None,

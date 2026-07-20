@@ -2,6 +2,15 @@
 
 [![CI](https://github.com/coredo-eu/codex-claude-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/coredo-eu/codex-claude-orchestrator/actions/workflows/ci.yml)
 
+> [!IMPORTANT]
+> **Branch variant — `main` (MCP-free).** This long-lived variant provides the
+> persistent Opus parent, role-routed Haiku/Sonnet/Opus/Fable workers, and
+> GPT-5.6 native fallback without enabling any MCP server for Claude workers.
+> Choose it for the smallest runtime and configuration surface with direct
+> source inspection. For guarded CodeIndexer discovery, use the separate
+> [`codeindexer`](https://github.com/coredo-eu/codex-claude-orchestrator/tree/codeindexer)
+> variant. The branches are alternatives and are not intended to be merged.
+
 Use Codex and Claude Code as one local engineering system instead of choosing
 between them. Codex keeps user intent, architecture, executor choice, and the
 final verdict. A persistent Claude Code parent retains execution context and

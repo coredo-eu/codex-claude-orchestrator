@@ -82,24 +82,32 @@ be faster in the main Codex session.
 
 ## Two subscriptions, one local workflow
 
+One practical reason to use this project is capacity. If the included usage of
+one coding subscription is not enough, but you do not want to rely on multiple
+accounts with the same provider, you can combine two independent first-party
+subscriptions instead: one OpenAI account with ChatGPT Plus and one Anthropic
+account with Claude Pro.
+
 At the currently published US monthly prices, ChatGPT Plus is **$20/month** and
 includes Codex in the CLI, while Claude Pro is **$20/month** and includes Claude
-Code. That makes a subscription-first `$20 + $20` setup possible before taxes,
-optional credits, or higher-capacity plans:
+Code. The orchestrator turns that `$20 + $20` combination into one local
+workflow, with capacity coming from two official products rather than duplicate
+accounts inside one service. Prices exclude taxes, optional credits, and
+higher-capacity plans:
 
 - [OpenAI Codex pricing and plan availability](https://learn.chatgpt.com/docs/pricing)
 - [Anthropic Claude pricing and Claude Code availability](https://claude.com/pricing)
 
-Each product authenticates through its own official client and account. This
-plugin does not copy cookies, forward login credentials, share accounts, convert
-a consumer subscription into an unofficial API, or bypass provider limits.
-Prices, availability, model access, and usage limits can change and vary by
-region or organization. This project makes no legal or terms-of-service
-guarantee; users remain responsible for the rules that apply to their accounts.
-Claude Code also chooses its billing path from its active authentication; an
-inherited API key can select API billing instead of subscription usage. Check
-the active account and billing source in both CLIs before relying on included
-plan usage.
+Each subscription remains separate and authenticates through its provider's
+official client. The plugin coordinates Codex and Claude Code locally; it does
+not copy cookies, forward login credentials, share accounts, convert a consumer
+subscription into an unofficial API, or bypass provider limits. Prices,
+availability, model access, and usage limits can change and vary by region or
+organization. This is not a legal or terms-of-service guarantee; users remain
+responsible for the rules that apply to their accounts. Claude Code also chooses
+its billing path from its active authentication; an inherited API key can select
+API billing instead of subscription usage. Check the active account and billing
+source in both CLIs before relying on included plan usage.
 
 ## How a task moves through the system
 

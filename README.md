@@ -3,12 +3,16 @@
 [![CI](https://github.com/coredo-eu/codex-claude-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/coredo-eu/codex-claude-orchestrator/actions/workflows/ci.yml)
 
 > [!IMPORTANT]
-> **Branch variant — `codeindexer`.** This long-lived variant adds read-only
-> CodeIndexer semantic discovery to the same orchestrator. New workers require
-> an exact credential-free loopback `codeindexer` HTTP `/mcp` entry in
-> `~/.claude.json`; the launcher snapshots only that endpoint and guards an
-> allowlisted read surface. Indexed findings still require source verification.
-> For no MCP dependency, use the separate
+> **Branch variant — `codeindexer`.** This long-lived variant gives the
+> orchestrator guarded, read-only access to
+> [CodeIndexer](https://codeindexer.dev), a local MCP code-intelligence service
+> for semantic and symbolic search, call-graph navigation, change-impact
+> analysis, and persistent agent memory. Use it when a large or multi-repository
+> codebase makes repeated text search and context rebuilding expensive. New
+> workers require an exact credential-free loopback `codeindexer` HTTP `/mcp`
+> entry in `~/.claude.json`; the launcher snapshots only that endpoint and
+> exposes an allowlisted read surface. Indexed findings still require source
+> verification. For no MCP dependency, use the separate
 > [`main`](https://github.com/coredo-eu/codex-claude-orchestrator/tree/main)
 > variant. The branches are alternatives and are not intended to be merged.
 
@@ -396,16 +400,22 @@ summary, or subagent return. Like the
 existing kill switch and leases, the assignment gate is cooperative same-UID
 accounting; it is not a sandbox against a compromised worker.
 
-### Optional CodeIndexer profile
+### CodeIndexer profile
+
+[CodeIndexer](https://codeindexer.dev) builds a local, queryable view of project
+structure for semantic and symbolic search, call-graph navigation, change-impact
+analysis, and persistent agent memory. This variant is intended for large or
+multi-repository systems where those derived views can reduce repeated file
+search and context rebuilding.
 
 New schema-4 workers read only the `codeindexer` entry from `$HOME/.claude.json`
 and accept an exact credential-free `http` loopback `/mcp` URL. The minimal
 config is copied into the private session snapshot; resume never rereads the
 global file. A `PreToolUse` guard allows a small semantic read surface and
-denies mutation, unknown tools, and unknown actions. CodeIndexer is a derived
-view: material findings still require verification in authoritative source.
-The MCP-free `main` runtime stops at schema 3, preventing silent cross-profile
-resume.
+denies mutation, unknown tools, and unknown actions. The index does not replace
+direct inspection: material findings still require verification in
+authoritative source. The MCP-free `main` runtime stops at schema 3, preventing
+silent cross-profile resume.
 
 ### Optional native roles
 

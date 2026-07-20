@@ -66,7 +66,7 @@ acknowledged=0
 context_state="observed"
 continuation_scope="none"
 
-if [[ "$runtime_schema" == "3" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
   counts=$(cco_context_counts "$registration") || \
     cco_die 70 "CLAUDE_ASSIGN_CONTEXT_CORRUPT: uuid=$session_uuid"
   events="${counts%% *}"

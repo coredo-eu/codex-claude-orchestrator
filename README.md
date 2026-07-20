@@ -18,6 +18,8 @@ daemon, and no claim to be an operating-system sandbox.
   independently verifies the result. Claude is not forced onto every action.
 - **Claude keeps context.** One PTY-backed Opus parent can survive across related
   tasks instead of rebuilding repository and outcome context every time.
+- **CodeIndexer stays optional.** The parent gets credential-free loopback,
+  read-only semantic discovery while direct source tools remain equally valid.
 - **Each model gets the work it fits.** Haiku searches and triages, Sonnet
   implements and debugs, Opus reviews and synthesizes, and Fable is reserved for
   exceptional long-horizon work.
@@ -226,7 +228,7 @@ restore procedural scaffolding.
 
 ## Status and prerequisites
 
-Version `0.3.0` is an early, local-execution release.
+Version `0.3.1` is an early, local-execution release.
 
 "Local execution" describes the orchestration, processes, repository access,
 leases, and custody state. Model requests and supplied content are still handled
@@ -351,8 +353,8 @@ handled without that classifier call under current Claude Code behavior.
 
 ### Persistent-parent context
 
-Claude Code remains the sole owner of context compaction. New runtime-schema-3
-workers add a `PostCompact` observer that appends one literal event marker and
+Claude Code remains the sole owner of context compaction. Runtime-schema-3/4
+workers use a `PostCompact` observer that appends one literal event marker and
 drains the hook payload without parsing, printing, or retaining
 `compact_summary`.
 
@@ -383,6 +385,17 @@ complete. It contains no prompt, assignment body, transcript, generated
 summary, or subagent return. Like the
 existing kill switch and leases, the assignment gate is cooperative same-UID
 accounting; it is not a sandbox against a compromised worker.
+
+### Optional CodeIndexer profile
+
+New schema-4 workers read only the `codeindexer` entry from `$HOME/.claude.json`
+and accept an exact credential-free `http` loopback `/mcp` URL. The minimal
+config is copied into the private session snapshot; resume never rereads the
+global file. A `PreToolUse` guard allows a small semantic read surface and
+denies mutation, unknown tools, and unknown actions. CodeIndexer is a derived
+view: material findings still require verification in authoritative source.
+The MCP-free `main` runtime stops at schema 3, preventing silent cross-profile
+resume.
 
 ### Optional native roles
 
@@ -481,12 +494,12 @@ cooperative controls, not proof against a process deliberately detached from its
 group; after a crash, lost PTY, or ambiguous identity, stay read-only or use an
 isolated worktree.
 
-Version `0.3.0` introduces runtime schema 3 for the content-free compaction
-observer and assignment decision checkpoint. Schema-2 resumes still reuse their
-original roster and settings snapshot, and schema-1 resumes keep their original
-single-subagent-model snapshot. Both remain usable but report context as
-`unobserved_legacy`; neither is silently converted. Unversioned legacy
-registrations are not adopted.
+Version `0.3.1` adds schema 4 for the pinned read-only CodeIndexer profile on top
+of schema 3's content-free compaction observer and assignment checkpoint.
+Schema-3 resumes remain MCP-free and reuse their original snapshots. Schema-2
+and schema-1 resumes likewise keep their original roster/model behavior and
+report context as `unobserved_legacy`; none is silently converted. Unversioned
+legacy registrations are not adopted.
 
 ## Uninstall and state cleanup
 
@@ -500,8 +513,9 @@ registrations are not adopted.
    `$HOME/.codex/claude-pty-leases` before deleting any retired/stale state. Do
    not use a broad recursive deletion against `$HOME` or `$HOME/.codex`.
 
-The runtime stores registrations, leases, model names, generated settings, and
-retirement metadata in the user's Codex state directory. Claude Code may store
+The runtime stores registrations, leases, model names, generated settings, the
+credential-free loopback CodeIndexer URL, and retirement metadata in the user's
+Codex state directory. Claude Code may store
 its own transcripts, history, and diagnostics according to its product
 behavior. This plugin does not upload that data or print task bodies itself, but
 it is not a log-prevention or data-loss-prevention system.
@@ -517,8 +531,10 @@ Designed to resist accidental overlap and common authority drift:
 - a global gate serializes launch, disable, and retirement state transitions;
 - generated settings deny common configuration edits and the CLI denies common
   external, destructive, publication, and service-control commands;
-- setting sources are empty and no MCP servers are enabled for the worker;
-- inherited global subagent-model overrides are removed for schema-2 workers;
+- setting sources are empty; schema 4 enables only the pinned, guarded,
+  credential-free loopback CodeIndexer snapshot, while schema 1–3 remain
+  MCP-free;
+- inherited global subagent-model overrides are removed for schema-2+ workers;
 - built-in Claude agents are denied, and a pre-spawn hook rejects unlisted
   roles or mismatched model overrides;
 - runtime snapshots are private to the local user and contain no task body or

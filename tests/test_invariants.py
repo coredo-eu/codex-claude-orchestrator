@@ -46,7 +46,7 @@ def main() -> int:
     manifest = json.loads(read(PLUGIN / ".codex-plugin/plugin.json"))
     require(manifest["name"] == PLUGIN.name, "plugin folder and manifest names differ")
     require(re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"]) is not None, "strict semver required")
-    require(manifest["version"] == "0.3.0", "release version drift")
+    require(manifest["version"] == "0.3.1", "release version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"
@@ -126,6 +126,7 @@ def main() -> int:
         require(heading in worker_prompt, f"worker prompt contract missing {heading}")
     require("choose the method" in worker_prompt.casefold(), "worker prompt does not grant method choice")
     require("launcher enforces their roles and models" in worker_prompt, "runtime routing boundary missing")
+    require("CodeIndexer is optional" in worker_prompt and "verify material indexed findings in source" in worker_prompt, "lean CodeIndexer contract missing")
     require(len(worker_prompt.split()) <= 240, "worker prompt is no longer lean")
 
     hook_text = read(SKILL / "scripts/worker-subagent-contract.zsh")
@@ -150,16 +151,19 @@ def main() -> int:
     require('--setting-sources ""' in launcher, "isolated setting sources missing")
     require('defaultMode: "auto"' in launcher, "Claude parent auto mode missing")
     require("--strict-mcp-config" in launcher, "external MCP configurations are not excluded")
-    require("--mcp-config" not in launcher, "launcher must not inject an MCP configuration")
+    require('--mcp-config "$runtime_mcp"' in launcher, "pinned CodeIndexer MCP snapshot is not injected")
+    require('mcp_args=(--mcp-config "$runtime_mcp")' in launcher, "MCP snapshot is not schema-scoped")
 
-    require("runtime_schema_version" in launcher and 'print -r -- "3"' in launcher, "runtime schema-3 pin missing")
-    require('print -r -- "0.3.0" > "$registration/runtime_version"' in launcher, "runtime schema-3 version drift")
+    require("runtime_schema_version" in launcher and 'print -r -- "4"' in launcher, "runtime schema-4 pin missing")
+    require('print -r -- "0.3.1" > "$registration/runtime_version"' in launcher, "runtime schema-4 version drift")
     for snapshot in (
         "worker-agents.json",
         "worker-system-prompt.txt",
         "worker-subagent-contract.zsh",
         "worker-agent-router.zsh",
         "worker-compaction-counter.zsh",
+        "worker-codeindexer-guard.zsh",
+        "codeindexer-mcp.json",
         "worker-settings.json",
     ):
         require(f'runtime/{snapshot}' in launcher or f'runtime_dir/{snapshot}' in launcher or snapshot in launcher, f"snapshot missing: {snapshot}")
@@ -167,6 +171,7 @@ def main() -> int:
     require("$runtime_hook" in launcher, "generated settings do not pin hook snapshot")
     require("$runtime_agent_router" in launcher, "generated settings do not pin router snapshot")
     require("$runtime_compaction_counter" in launcher, "generated settings do not pin PostCompact observer")
+    require("$runtime_codeindexer_guard" in launcher, "generated settings do not pin CodeIndexer guard")
     require("PostCompact" in launcher, "completed compactions are not observed")
     require("/bin/chmod 700 \"$runtime_dir\"" in launcher, "runtime directory mode missing")
     require("/bin/chmod 600 \"$runtime_prompt\"" in launcher, "prompt snapshot mode missing")
@@ -182,7 +187,7 @@ def main() -> int:
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")
-    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3"' in runtime, "durable legacy/current schema support missing")
+    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4"' in runtime, "durable legacy/current schema support missing")
     require("pgrep" not in toggle and "pkill" not in toggle, "toggle contains a broad process-name matcher")
 
     live_check = retire.index("CLAUDE_RETIRE_WORKER_STILL_LIVE")
@@ -247,12 +252,6 @@ def main() -> int:
     corpus_casefold = corpus.casefold()
     for needle, label in forbidden.items():
         require(needle.casefold() not in corpus_casefold, f"{label} found in repository")
-    removed_name = "code" + "indexer"
-    removed_spaced_name = "code" + " " + "indexer"
-    require(
-        removed_name not in corpus_casefold and removed_spaced_name not in corpus_casefold,
-        "removed semantic-index integration found",
-    )
     require(
         re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", corpus, re.I) is None,
         "concrete session UUID found",

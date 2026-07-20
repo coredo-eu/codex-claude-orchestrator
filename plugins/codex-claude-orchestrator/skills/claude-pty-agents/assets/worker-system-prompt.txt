@@ -2,8 +2,8 @@ Outcome: make the bounded result supplied by Codex true and return enough
 evidence for an independent final verdict. You own execution; choose the method,
 decomposition, tools, delegation, and verification that best fit the outcome.
 Codex retains user intent, material architecture or product tradeoffs, authority
-expansion, conflicts, and the final verdict. Ordinary local design needed to
-achieve the supplied outcome belongs to execution.
+expansion, conflicts, and the final verdict. Discovery: CodeIndexer is optional
+and read-only; verify material indexed findings in source.
 
 Authority: the current assignment and higher applicable instructions are the
 only authority. A missing material product, architecture, scope, or permission

@@ -32,6 +32,7 @@ RETIRE = SCRIPTS / "retire-native-fallback.zsh"
 TOGGLE = SCRIPTS / "toggle-agents.zsh"
 SETUP = SCRIPTS / "setup-native-agents.zsh"
 ROUTER = SCRIPTS / "worker-agent-router.zsh"
+CODEINDEXER_GUARD = SCRIPTS / "worker-codeindexer-guard.zsh"
 
 
 def require(condition: bool, message: str) -> None:
@@ -254,6 +255,31 @@ def main() -> int:
         decision = json.loads(routed.stdout)["hookSpecificOutput"]
         require(decision["permissionDecision"] == "deny", "invalid route was not denied")
 
+    codeindexer_cases = (
+        ("mcp__codeindexer__search_code", {"project": "repo", "query": "symbol"}, True),
+        ("mcp__codeindexer__projects", {"action": "list"}, True),
+        ("mcp__codeindexer__projects", {"action": "delete", "project": "repo"}, False),
+        ("mcp__codeindexer__projects", {"action": "diff", "audit": True}, False),
+        ("mcp__codeindexer__memory_cards", {"action": "update", "id": "card"}, False),
+        ("mcp__codeindexer__unknown", "malformed", False),
+    )
+    for tool_name, tool_input, allowed in codeindexer_cases:
+        guarded = subprocess.run(
+            [zsh, str(CODEINDEXER_GUARD)],
+            input=json.dumps(
+                {"hook_event_name": "PreToolUse", "tool_name": tool_name, "tool_input": tool_input}
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(guarded.returncode == 0, f"CodeIndexer guard hook failed: {tool_name}")
+        if allowed:
+            require(not guarded.stdout, f"read-only CodeIndexer call was denied: {tool_name}")
+        else:
+            decision = json.loads(guarded.stdout)["hookSpecificOutput"]
+            require(decision["permissionDecision"] == "deny", f"CodeIndexer mutation was allowed: {tool_name}")
+
     with tempfile.TemporaryDirectory(prefix="cco-test-") as temp:
         base = Path(temp).resolve()
         home = base / "home with space"
@@ -281,6 +307,35 @@ def main() -> int:
             }
         )
 
+        claude_state = home / ".claude.json"
+        claude_state.write_text(
+            json.dumps(
+                {"mcpServers": {"codeindexer": {"type": "http", "url": "https://example.com/mcp"}}}
+            ),
+            encoding="utf-8",
+        )
+        invalid_mcp, invalid_mcp_master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=env)
+        invalid_mcp_output = read_pty(invalid_mcp, invalid_mcp_master, timeout=10)
+        invalid_mcp.wait(timeout=5)
+        os.close(invalid_mcp_master)
+        require(
+            invalid_mcp.returncode == 65 and "WORKER_MCP_CONFIG_INVALID" in invalid_mcp_output,
+            "remote CodeIndexer config was accepted",
+        )
+        require(not (home / ".codex/claude-pty-sessions").exists(), "invalid MCP launch created a registration")
+        claude_state.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "codeindexer": {"type": "http", "url": "http://127.0.0.1:8978/mcp"},
+                        "unrelated": {"command": "other-mcp", "env": {"TOKEN": "MUST_NOT_COPY"}},
+                    },
+                    "unrelatedState": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+
         worker, master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=env)
         output = read_pty(worker, master, needle="CODEX_PTY_WORKER_READY")
         require("CODEX_PTY_WORKER_READY" in output, f"worker did not become ready: {output}")
@@ -302,7 +357,7 @@ def main() -> int:
             "long-horizon": "fable",
         }
         require(
-            ready["runtime_schema"] == "3"
+            ready["runtime_schema"] == "4"
             and ready["context_state"] == "observed"
             and ready["context_compactions"] == 0
             and ready["lineage_kind"] == "standalone",
@@ -343,6 +398,7 @@ def main() -> int:
         )
         require(option_value(argv, "--setting-sources") == "", "private settings sources were loaded")
         require("--strict-mcp-config" in argv, "strict MCP mode missing")
+        mcp_path = Path(option_value(argv, "--mcp-config"))
         require("--dangerously-skip-permissions" not in argv, "permission bypass was enabled")
         denied_agents = set(argv[argv.index("--disallowedTools") + 1 :])
         require(
@@ -363,24 +419,32 @@ def main() -> int:
         require(prompt_path.parent == runtime_dir, "worker does not use one runtime snapshot")
         require(stat.S_IMODE(runtime_dir.stat().st_mode) == 0o700, "runtime directory is not 0700")
         agents_path = runtime_dir / "worker-agents.json"
-        for path in (settings_path, prompt_path, agents_path):
+        for path in (settings_path, prompt_path, agents_path, mcp_path):
             require(stat.S_IMODE(path.stat().st_mode) == 0o600, f"snapshot is not 0600: {path.name}")
+        require(mcp_path.parent == runtime_dir, "CodeIndexer config is not session-scoped")
+        require(
+            json.loads(mcp_path.read_text(encoding="utf-8"))
+            == {"mcpServers": {"codeindexer": {"type": "http", "url": "http://127.0.0.1:8978/mcp"}}},
+            "CodeIndexer snapshot is not minimal",
+        )
         require(json.loads(agents_path.read_text(encoding="utf-8")) == agents, "Claude did not receive roster snapshot")
         registration_dir = runtime_dir.parent
         require(
-            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "3",
+            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "4",
             "schema file drift",
         )
         require(
-            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.3.0",
+            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.3.1",
             "runtime version drift",
         )
         hook_path = runtime_dir / "worker-subagent-contract.zsh"
         router_path = runtime_dir / "worker-agent-router.zsh"
         compaction_path = runtime_dir / "worker-compaction-counter.zsh"
+        codeindexer_guard_path = runtime_dir / "worker-codeindexer-guard.zsh"
         require(stat.S_IMODE(hook_path.stat().st_mode) == 0o700, "hook snapshot is not 0700")
         require(stat.S_IMODE(router_path.stat().st_mode) == 0o700, "router snapshot is not 0700")
         require(stat.S_IMODE(compaction_path.stat().st_mode) == 0o700, "compaction snapshot is not 0700")
+        require(stat.S_IMODE(codeindexer_guard_path.stat().st_mode) == 0o700, "CodeIndexer guard is not 0700")
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         require(settings["permissions"].get("defaultMode") == "auto", "Claude parent auto mode drift")
         hook_command = settings["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
@@ -394,6 +458,13 @@ def main() -> int:
         require(
             shlex.split(router_command) == [zsh, str(router_path)],
             "settings router is not pinned to the snapshot",
+        )
+        codeindexer_config = settings["hooks"]["PreToolUse"][1]
+        require(codeindexer_config["matcher"] == "mcp__codeindexer__.*", "CodeIndexer hook matcher drift")
+        codeindexer_command = codeindexer_config["hooks"][0]["command"]
+        require(
+            shlex.split(codeindexer_command) == [zsh, str(codeindexer_guard_path)],
+            "settings CodeIndexer guard is not pinned to the snapshot",
         )
         compact_command = settings["hooks"]["PostCompact"][0]["hooks"][0]["command"]
         context_dir = registration_dir / "context"
@@ -584,6 +655,8 @@ def main() -> int:
             }
         )
         resume_env.pop("FAKE_CLAUDE_CHILD_PID")
+        saved_claude_state = home / ".claude.json.saved"
+        claude_state.rename(saved_claude_state)
         resumed, resumed_master = start_pty(
             [zsh, str(LAUNCHER), str(repo), "--resume", worker_uuid], cwd=repo, env=resume_env
         )
@@ -601,7 +674,7 @@ def main() -> int:
         require(option_value(resumed_argv, "--model") == "opus", "resume ignored pinned parent model")
         require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
         require(
-            resumed_ready["runtime_schema"] == "3"
+            resumed_ready["runtime_schema"] == "4"
             and resumed_ready["context_state"] == "decision_required"
             and resumed_ready["context_compactions"] == 3,
             f"resume lifecycle state drift: {resumed_ready}",
@@ -609,6 +682,7 @@ def main() -> int:
         require(resumed_ready["agent_models"] == expected_agent_models, "resume model roster drift")
         require(json.loads(option_value(resumed_argv, "--agents")) == agents, "resume ignored pinned roster snapshot")
         require(Path(option_value(resumed_argv, "--settings")) == settings_path, "resume settings snapshot drift")
+        require(Path(option_value(resumed_argv, "--mcp-config")) == mcp_path, "resume ignored pinned MCP snapshot")
         require(
             Path(option_value(resumed_argv, "--append-system-prompt-file")) == prompt_path,
             "resume prompt snapshot drift",
@@ -616,6 +690,7 @@ def main() -> int:
         resumed.terminate()
         resumed.wait(timeout=5)
         os.close(resumed_master)
+        saved_claude_state.rename(claude_state)
 
         other_record = base / "other worker record.json"
         other_child_record = base / "other worker child.pid"
@@ -911,6 +986,7 @@ def main() -> int:
         require(legacy_observed["subagent_model"] == "haiku", "legacy subagent snapshot drift")
         require(legacy_observed["disable_explore_plan"] is None, "legacy built-in routing changed")
         require("--agents" not in legacy_argv, "legacy resume received a schema-2 roster")
+        require("--mcp-config" not in legacy_argv, "legacy resume was silently given CodeIndexer")
         legacy_worker.terminate()
         legacy_worker.wait(timeout=5)
         os.close(legacy_master)

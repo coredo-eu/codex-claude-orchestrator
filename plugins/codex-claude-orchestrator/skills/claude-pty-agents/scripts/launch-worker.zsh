@@ -48,11 +48,20 @@ agents_file="$skill_dir/assets/worker-agents.json"
 subagent_hook="$script_dir/worker-subagent-contract.zsh"
 agent_router="$script_dir/worker-agent-router.zsh"
 compaction_counter="$script_dir/worker-compaction-counter.zsh"
+codeindexer_guard="$script_dir/worker-codeindexer-guard.zsh"
 [[ -r "$prompt_file" ]] || cco_die 66 "WORKER_PROMPT_MISSING: $prompt_file"
 [[ -r "$agents_file" ]] || cco_die 66 "WORKER_AGENTS_MISSING: $agents_file"
 [[ -x "$subagent_hook" ]] || cco_die 66 "WORKER_SUBAGENT_HOOK_MISSING: $subagent_hook"
 [[ -x "$agent_router" ]] || cco_die 66 "WORKER_AGENT_ROUTER_MISSING: $agent_router"
 [[ -x "$compaction_counter" ]] || cco_die 66 "WORKER_COMPACTION_COUNTER_MISSING: $compaction_counter"
+[[ -x "$codeindexer_guard" ]] || cco_die 66 "WORKER_CODEINDEXER_GUARD_MISSING: $codeindexer_guard"
+
+worker_mcp_json=""
+if [[ "$mode" == "new" ]]; then
+  claude_state_file="$CCO_HOME/.claude.json"
+  worker_mcp_json=$(cco_codeindexer_mcp_json "$claude_state_file" 0) || \
+    cco_die 65 "WORKER_MCP_CONFIG_INVALID: expected credential-free loopback CodeIndexer at $claude_state_file"
+fi
 
 [[ -t 0 && -t 1 ]] || cco_die 69 "PTY_REQUIRED"
 worker_group=$(cco_process_group $$)
@@ -60,7 +69,7 @@ worker_group=$(cco_process_group $$)
   cco_die 69 "PTY_PROCESS_GROUP_ISOLATION_REQUIRED: pid=$$ pgid=${worker_group:-unknown}; invoke the launcher as the PTY command or with exec"
 
 parent_model=${CODEX_CLAUDE_PARENT_MODEL:-opus}
-runtime_schema="3"
+runtime_schema="4"
 legacy_subagent_model=""
 
 if [[ "$mode" == "new" ]]; then
@@ -135,8 +144,11 @@ if [[ "$mode" == "resume" ]]; then
     2)
       required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh)
       ;;
-    3)
+    3|4)
       required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh runtime/worker-compaction-counter.zsh)
+      if [[ "$runtime_schema" == "4" ]]; then
+        required_snapshots+=(runtime/worker-codeindexer-guard.zsh runtime/codeindexer-mcp.json)
+      fi
       lineage_kind_file="$registration/lineage_kind"
       [[ -f "$lineage_kind_file" && ! -L "$lineage_kind_file" ]] || \
         cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid"
@@ -249,8 +261,8 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$worker_name" > "$registration/name"
   print -r -- "$worker_group" > "$registration/process_group"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$registration/created_at"
-  print -r -- "3" > "$registration/runtime_schema_version"
-  print -r -- "0.3.0" > "$registration/runtime_version"
+  print -r -- "4" > "$registration/runtime_schema_version"
+  print -r -- "0.3.1" > "$registration/runtime_version"
   print -r -- "$lineage_kind" > "$registration/lineage_kind"
   if [[ -n "$predecessor_uuid" ]]; then
     print -r -- "$predecessor_uuid" > "$registration/predecessor_session_uuid"
@@ -275,10 +287,13 @@ runtime_prompt="$runtime_dir/worker-system-prompt.txt"
 runtime_hook="$runtime_dir/worker-subagent-contract.zsh"
 runtime_agent_router="$runtime_dir/worker-agent-router.zsh"
 runtime_compaction_counter="$runtime_dir/worker-compaction-counter.zsh"
+runtime_codeindexer_guard="$runtime_dir/worker-codeindexer-guard.zsh"
+runtime_mcp="$runtime_dir/codeindexer-mcp.json"
 runtime_settings="$runtime_dir/worker-settings.json"
 runtime_agents="$runtime_dir/worker-agents.json"
 registration_context_dir="$registration/context"
 compaction_command="${(q)zsh_bin} ${(q)runtime_compaction_counter} ${(q)registration_context_dir}"
+codeindexer_command="${(q)zsh_bin} ${(q)runtime_codeindexer_guard}"
 settings_tmp=""
 cleanup_runtime_tmp() {
   [[ -n "${settings_tmp:-}" && -e "$settings_tmp" ]] && /bin/rm -f -- "$settings_tmp"
@@ -294,11 +309,15 @@ if [[ "$mode" == "new" ]]; then
   /bin/cp -- "$subagent_hook" "$runtime_hook"
   /bin/cp -- "$agent_router" "$runtime_agent_router"
   /bin/cp -- "$compaction_counter" "$runtime_compaction_counter"
+  /bin/cp -- "$codeindexer_guard" "$runtime_codeindexer_guard"
+  print -r -- "$worker_mcp_json" > "$runtime_mcp"
   /bin/chmod 600 "$runtime_prompt"
   /bin/chmod 600 "$runtime_agents"
   /bin/chmod 700 "$runtime_hook"
   /bin/chmod 700 "$runtime_agent_router"
   /bin/chmod 700 "$runtime_compaction_counter"
+  /bin/chmod 700 "$runtime_codeindexer_guard"
+  /bin/chmod 600 "$runtime_mcp"
   /bin/chmod 700 "$runtime_dir"
   hook_command="${(q)zsh_bin} ${(q)runtime_hook}"
   router_command="${(q)zsh_bin} ${(q)runtime_agent_router}"
@@ -307,6 +326,7 @@ if [[ "$mode" == "new" ]]; then
   "$CCO_JQ" -n \
     --arg hook "$hook_command" \
     --arg router "$router_command" \
+    --arg codeindexer "$codeindexer_command" \
     --arg compaction "$compaction_command" \
     --arg home "$CCO_HOME" \
     --arg root "$root" '
@@ -333,10 +353,16 @@ if [[ "$mode" == "new" ]]; then
       ]
     },
     hooks: {
-      PreToolUse: [{
-        matcher: "Agent",
-        hooks: [{type: "command", command: $router, timeout: 5}]
-      }],
+      PreToolUse: [
+        {
+          matcher: "Agent",
+          hooks: [{type: "command", command: $router, timeout: 5}]
+        },
+        {
+          matcher: "mcp__codeindexer__.*",
+          hooks: [{type: "command", command: $codeindexer, timeout: 5}]
+        }
+      ],
       SubagentStart: [{
         hooks: [{type: "command", command: $hook, timeout: 5}]
       }],
@@ -394,7 +420,7 @@ else
   agent_models=$("$CCO_JQ" -cn --arg model "$legacy_subagent_model" '{"*":$model}')
 fi
 
-if [[ "$runtime_schema" == "3" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
   pinned_compaction_command=$("$CCO_JQ" -er '
     .hooks.PostCompact
     | select(type == "array" and length == 1)
@@ -407,6 +433,27 @@ if [[ "$runtime_schema" == "3" ]]; then
     cco_die 66 "WORKER_COMPACTION_HOOK_INVALID: $runtime_settings"
   [[ "$pinned_compaction_command" == "$compaction_command" ]] || \
     cco_die 66 "WORKER_COMPACTION_HOOK_INVALID: $runtime_settings"
+fi
+
+if [[ "$runtime_schema" == "4" ]]; then
+  [[ -x "$runtime_codeindexer_guard" ]] || \
+    cco_die 66 "WORKER_CODEINDEXER_GUARD_INVALID: $runtime_codeindexer_guard"
+  worker_mcp_json=$(cco_codeindexer_mcp_json "$runtime_mcp" 1) || \
+    cco_die 66 "WORKER_MCP_CONFIG_INVALID: $runtime_mcp"
+  pinned_codeindexer_command=$("$CCO_JQ" -er '
+    .hooks.PreToolUse
+    | select(type == "array" and length == 2)
+    | .[1]
+    | select(.matcher == "mcp__codeindexer__.*")
+    | .hooks
+    | select(type == "array" and length == 1)
+    | .[0]
+    | select(.type == "command" and .timeout == 5)
+    | .command
+  ' "$runtime_settings" 2>/dev/null) || \
+    cco_die 66 "WORKER_CODEINDEXER_HOOK_INVALID: $runtime_settings"
+  [[ "$pinned_codeindexer_command" == "$codeindexer_command" ]] || \
+    cco_die 66 "WORKER_CODEINDEXER_HOOK_INVALID: $runtime_settings"
 fi
 
 deny_rules=(
@@ -453,7 +500,7 @@ session_args=(--session-id "$session_uuid")
 
 context_compactions=0
 context_acknowledged=0
-if [[ "$runtime_schema" == "3" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
   context_counts=$(cco_context_counts "$registration") || \
     cco_die 70 "CLAUDE_CONTEXT_CORRUPT: uuid=$session_uuid"
   context_compactions="${context_counts%% *}"
@@ -497,7 +544,7 @@ cco_release_gate
 gate_held=0
 trap - EXIT HUP INT TERM
 
-typeset -a model_env agent_args builtin_agent_env
+typeset -a model_env agent_args builtin_agent_env mcp_args
 if [[ "$runtime_schema" == "1" ]]; then
   model_env=("CLAUDE_CODE_SUBAGENT_MODEL=$legacy_subagent_model")
   agent_args=()
@@ -507,6 +554,8 @@ else
   agent_args=(--agents "$agents_json")
   builtin_agent_env=(CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1)
 fi
+mcp_args=()
+[[ "$runtime_schema" != "4" ]] || mcp_args=(--mcp-config "$runtime_mcp")
 
 exec /usr/bin/env \
   "${model_env[@]}" \
@@ -523,5 +572,6 @@ exec /usr/bin/env \
   --setting-sources "" \
   --settings "$runtime_settings" \
   --strict-mcp-config \
+  "${mcp_args[@]}" \
   --append-system-prompt-file "$runtime_prompt" \
   --disallowedTools "${deny_rules[@]}"

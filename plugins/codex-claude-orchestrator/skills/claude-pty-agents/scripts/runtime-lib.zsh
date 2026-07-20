@@ -203,6 +203,31 @@ cco_context_counts() {
   print -r -- "$events $acknowledged"
 }
 
+# Extract one credential-free loopback CodeIndexer server. Strict mode also
+# requires the file itself to be the minimal session snapshot.
+cco_codeindexer_mcp_json() {
+  local config="$1" strict="${2:-0}"
+  [[ -f "$config" && ! -L "$config" && ( "$strict" == "0" || "$strict" == "1" ) ]] || return 1
+  "$CCO_JQ" -ce --arg strict "$strict" '
+    select(type == "object")
+    | select($strict != "1" or (keys | sort) == ["mcpServers"])
+    | .mcpServers as $servers
+    | select(($servers | type) == "object")
+    | select($strict != "1" or ($servers | keys | sort) == ["codeindexer"])
+    | $servers.codeindexer as $server
+    | select(
+        ($server | type) == "object" and
+        ($server | keys | sort) == ["type", "url"] and
+        $server.type == "http"
+      )
+    | ($server.url | capture(
+        "^http://(?<host>127\\.0\\.0\\.1|localhost|\\[::1\\]):(?<port>[1-9][0-9]{0,4})/mcp$"
+      )) as $address
+    | select(($address.port | tonumber) <= 65535)
+    | {mcpServers:{codeindexer:$server}}
+  ' "$config" 2>/dev/null
+}
+
 # Return the first live overlapping Codex-owned worker found across leases,
 # registered process groups, and exact process arguments.
 cco_live_overlap_reason() {
@@ -298,5 +323,5 @@ cco_lease_has_durable_registration() {
      "$(<"$registration/path_hash")" == "$path_hash" &&
      "$(<"$registration/session_uuid")" == "$uuid" &&
      "$(<"$registration/process_group")" == "$(<"$lease/process_group")" &&
-     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" ) ]]
+     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" ) ]]
 }

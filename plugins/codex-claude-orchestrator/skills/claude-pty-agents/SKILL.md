@@ -1,6 +1,6 @@
 ---
 name: claude-pty-agents
-description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with an Opus parent, role-routed Haiku/Sonnet/Opus/Fable subagents, and GPT-5.6 native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
+description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with an Opus parent, role-routed Haiku/Sonnet/Opus/Fable subagents, read-only loopback CodeIndexer discovery, and GPT-5.6 native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
 ---
 
 # Claude PTY agents
@@ -80,10 +80,14 @@ OS-enforced Bash sandbox. The launcher explicitly removes inherited
 `CLAUDE_CODE_SUBAGENT_MODEL` and the legacy `CODEX_CLAUDE_SUBAGENT_MODEL`
 convention because either would collapse the role-specific routing.
 
-The launcher loads no user/project/local settings sources, enables no MCP
-servers, adds a generated private overlay, and does not edit standalone Claude
-configuration. Claude Code may show a repository trust dialog on the first
-launch; the user must decide it interactively. Never bypass it.
+The launcher loads no user/project/local settings sources and does not edit
+standalone Claude configuration. A new schema-4 worker extracts only the exact
+credential-free loopback CodeIndexer entry from `$HOME/.claude.json`, snapshots
+it privately, and guards its MCP tools with a read-only allowlist. Resume uses
+that snapshot without rereading the global file. It remains optional; direct
+source inspection is equally valid. Claude Code may show a
+repository trust dialog on the first launch; the user must decide it
+interactively. Never bypass it.
 
 Keep the returned PTY `session_id` together with the exact UUID, name, root, and
 lease from the JSON object after `CODEX_PTY_WORKER_READY`. Reuse only that

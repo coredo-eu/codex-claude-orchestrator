@@ -49,7 +49,7 @@ def main() -> int:
         re.fullmatch(r"\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?", manifest["version"]) is not None,
         "strict semver required",
     )
-    require(manifest["version"].startswith("0.3.1+codex."), "local cachebuster version drift")
+    require(manifest["version"].startswith("0.3.2+codex."), "local cachebuster version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"
@@ -75,6 +75,7 @@ def main() -> int:
     retire = read(SKILL / "scripts/retire-native-fallback.zsh")
     toggle = read(SKILL / "scripts/toggle-agents.zsh")
     setup = read(SKILL / "scripts/setup-native-agents.zsh")
+    native_runner = read(SKILL / "scripts/run-native-agent.zsh")
     policy = read(SKILL / "references/codex-policy-snippet.md")
     agent_roster = json.loads(read(SKILL / "assets/worker-agents.json"))
 
@@ -226,6 +227,51 @@ def main() -> int:
             require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
         require(len(instructions.group(1).split()) <= 85, f"native prompt is no longer lean: {role}")
 
+    for marker in (
+        '--sandbox "$sandbox_mode"',
+        "--ignore-user-config",
+        "--disable multi_agent",
+        "--disable apps",
+        "--disable hooks",
+        "approval_policy=\"never\"",
+        "web_search=\"disabled\"",
+        "NATIVE_ROLE_SANDBOX_MISMATCH",
+        "NATIVE_TRUSTED_ROLE_PROFILE_MISSING",
+        "NATIVE_ROLE_PROFILE_CONTRACT_MISMATCH",
+        "CODEX_NATIVE_ISOLATED_START",
+        "cco_codeindexer_mcp_json",
+        "enabled_tools=$readonly_codeindexer_tools",
+        "disabled_tools=$denied_codeindexer_tools",
+        "default_tools_approval_mode",
+        "required=true",
+        "task supplies the exact indexed project name",
+    ):
+        require(marker in native_runner, f"isolated native launcher missing: {marker}")
+    require(
+        'source_explorer|reviewer|security_reviewer)' in native_runner
+        and 'required_sandbox="read-only"' in native_runner,
+        "read-only native role map drift",
+    )
+    require(
+        'mech_executor|test_runner)' in native_runner
+        and 'required_sandbox="workspace-write"' in native_runner,
+        "write-capable native role map drift",
+    )
+    for tool in (
+        "search_code",
+        "read_chunk",
+        "read_file_range",
+        "file_deps",
+        "find_callers",
+        "find_callees",
+        "find_references",
+        "find_test_coverage",
+    ):
+        require(f'"{tool}"' in native_runner, f"native CodeIndexer read tool missing: {tool}")
+    for mixed_action_tool in ('"projects"', '"solutions"', '"skills"', '"memory_cards"'):
+        require(mixed_action_tool in native_runner, f"mixed-action native CodeIndexer deny missing: {mixed_action_tool}")
+    require('task=$(cat)' in native_runner and 'print -rn -- "$task"' in native_runner, "native task is not stdin-only")
+
     native_routing_contract = (
         "`task_name` is only a semantic instance identifier",
         "mandatory `agent_type` field",
@@ -235,6 +281,13 @@ def main() -> int:
         "means stop the child: no task assignment and no edit custody transfer",
         "sandbox inheritance is a separate runtime",
         "not corrected by configuration",
+        "custom-agent `sandbox_mode` is a role default",
+        "run-native-agent.zsh source_explorer",
+        "Never run this isolated path and a built-in child",
+        "mixed-action management tools are not exposed",
+        "repository-owned\nprofile is not a trusted isolation authority",
+        "exact registered CodeIndexer project name",
+        "explicit deny-list",
     )
     for phrase in native_routing_contract:
         require(phrase in skill_text, f"native routing contract missing: {phrase}")
@@ -245,6 +298,7 @@ def main() -> int:
         "Missing or mismatched `agent_role` fails closed",
         "`fork_turns=all` and the default are invalid",
         "`subagent_type` field for native routing",
+        "pure read/search MCP tools",
     ):
         require(phrase in readme, f"native routing documentation missing: {phrase}")
 
@@ -257,6 +311,8 @@ def main() -> int:
         "Fallback transfers ownership",
         "pass the exact custom profile through `agent_type`",
         "renaming `task_name` is not a routing fallback",
+        "parent runtime is broader than the role",
+        "never a repository-owned",
     ):
         require(phrase in policy, f"opt-in policy missing: {phrase}")
 

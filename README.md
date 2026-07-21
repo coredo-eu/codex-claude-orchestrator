@@ -210,6 +210,35 @@ use `none` or a bounded numeric value. An omitted `agent_type` selects the
 platform default rather than a custom profile. Sandbox inheritance is a
 separate runtime limitation, not a configuration-routing fix.
 
+The role file alone therefore cannot narrow a child spawned from a
+`danger-full-access` turn. If the observed parent/child policy is broader than
+the selected role—or the current tool surface rejects `agent_type`—use the
+isolated launcher:
+
+```zsh
+printf '%s\n' '<bounded source question>' | \
+  "$SKILL_DIR/scripts/run-native-agent.zsh" \
+  source_explorer /absolute/project/root
+```
+
+This starts a separate `codex exec` run with the trusted user-level role's model,
+reasoning effort, instructions, and explicit sandbox. It ignores user runtime
+defaults, disables hooks, apps, web search, and nested agents, refuses a sandbox
+broader than the bundled role contract, and receives the task only through
+stdin. A repository-owned profile is never used as the isolation authority;
+install the regular, non-symlink trusted copy with
+`setup-native-agents.zsh --target user`. Its contract must match the bundled
+template, while its explicitly installed model is preserved. The result is
+evidence for the orchestrator, not a child-thread receipt. Do not launch both
+paths for the same outcome. This branch also gives the
+isolated role the validated loopback CodeIndexer endpoint, but exposes only
+pure read/search MCP tools and pre-approves only that allowlist for
+non-interactive use. All other known server tools are explicitly denied, and
+mixed-action management tools are omitted from the allowlist entirely. The
+owning Codex supplies the exact registered CodeIndexer project name in the task;
+without one, the isolated role falls back to ordinary source inspection rather
+than guessing a project or requesting management tools.
+
 ## A concrete example
 
 Suppose the user asks Codex to fix an intermittent authorization regression:
@@ -256,7 +285,7 @@ restore procedural scaffolding.
 
 ## Status and prerequisites
 
-Version `0.3.1` is an early, local-execution release.
+Version `0.3.2` is an early, local-execution release.
 
 "Local execution" describes the orchestration, processes, repository access,
 leases, and custody state. Model requests and supplied content are still handled
@@ -519,7 +548,11 @@ Native fallback is an ownership transfer:
 1. stop input to Claude and obtain a clean terminal handoff;
 2. prove the registered process group is empty and edit custody has returned;
 3. run `retire-native-fallback.zsh <root> <uuid> <task-id>`;
-4. begin native writes only after the retirement marker succeeds.
+4. choose a built-in role only when its observed sandbox is no broader than its
+   profile; otherwise use `run-native-agent.zsh` for an isolated explicit
+   sandbox;
+5. verify the selected path's role/model/effort/sandbox evidence, then begin
+   native writes only after the retirement marker succeeds.
 
 Retirement holds the global gate, validates thread/root/UUID registration,
 checks leases, durable registrations, the process table, and every overlapping

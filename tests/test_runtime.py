@@ -31,6 +31,7 @@ COMPACTION_COUNTER = SCRIPTS / "worker-compaction-counter.zsh"
 RETIRE = SCRIPTS / "retire-native-fallback.zsh"
 TOGGLE = SCRIPTS / "toggle-agents.zsh"
 SETUP = SCRIPTS / "setup-native-agents.zsh"
+NATIVE_RUNNER = SCRIPTS / "run-native-agent.zsh"
 ROUTER = SCRIPTS / "worker-agent-router.zsh"
 CODEINDEXER_GUARD = SCRIPTS / "worker-codeindexer-guard.zsh"
 
@@ -192,6 +193,29 @@ signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 while True:
     time.sleep(0.1)
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def write_fake_codex(path: Path) -> None:
+    path.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+record = Path(os.environ["FAKE_CODEX_RECORD"])
+payload = {
+    "argv": sys.argv[1:],
+    "stdin": sys.stdin.read(),
+}
+tmp = record.with_suffix(".tmp")
+tmp.write_text(json.dumps(payload), encoding="utf-8")
+tmp.replace(record)
+print("isolated native result")
 """,
         encoding="utf-8",
     )
@@ -1061,6 +1085,167 @@ def main() -> int:
             for path in agent_dir.glob("*.toml")
         }
         require(installed_native_models == expected_native_models, f"native default model map drift: {installed_native_models}")
+
+        trusted_applied = subprocess.run(
+            [zsh, str(SETUP), "--target", "user", "--apply", "--yes"],
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(trusted_applied.returncode == 0, f"trusted native setup failed: {trusted_applied.stderr}")
+        trusted_agent_dir = home / ".codex/agents"
+        require(
+            sorted(path.name for path in trusted_agent_dir.glob("*.toml")) == installed,
+            "trusted native role set drift",
+        )
+
+        project_source_profile = agent_dir / "source_explorer.toml"
+        project_source_text = project_source_profile.read_text(encoding="utf-8")
+        project_source_profile.write_text(
+            project_source_text.replace('model = "gpt-5.6-luna"', 'model = "untrusted-project-model"'),
+            encoding="utf-8",
+        )
+
+        fake_codex = base / "fake codex"
+        write_fake_codex(fake_codex)
+        codex_record = base / "native codex record.json"
+        native_env = env.copy()
+        native_env["CODEX_NATIVE_EXECUTABLE"] = str(fake_codex)
+        native_env["FAKE_CODEX_RECORD"] = str(codex_record)
+        source_task = "inspect the bounded source path"
+        isolated_source = subprocess.run(
+            [zsh, str(NATIVE_RUNNER), "source_explorer", str(repo)],
+            cwd=repo,
+            env=native_env,
+            input=source_task,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(isolated_source.returncode == 0, f"isolated source launch failed: {isolated_source.stderr}")
+        require(
+            "CODEX_NATIVE_ISOLATED_START role=source_explorer sandbox=read-only" in isolated_source.stderr
+            and "index=codeindexer-readonly" in isolated_source.stderr,
+            "isolated indexed source marker drift",
+        )
+        source_record = json.loads(codex_record.read_text(encoding="utf-8"))
+        source_argv = source_record["argv"]
+        require(source_argv[0] == "exec", "isolated native launcher did not use codex exec")
+        require(option_value(source_argv, "--sandbox") == "read-only", "source explorer sandbox was not enforced")
+        require(option_value(source_argv, "--model") == "gpt-5.6-luna", "source explorer model drift")
+        project_source_profile.write_text(project_source_text, encoding="utf-8")
+        require(option_value(source_argv, "--cd") == str(repo), "isolated native root drift")
+        for option in ("--ephemeral", "--ignore-user-config"):
+            require(option in source_argv, f"isolated native option missing: {option}")
+        for feature in ("multi_agent", "apps", "hooks"):
+            require(
+                any(source_argv[index : index + 2] == ["--disable", feature] for index in range(len(source_argv) - 1)),
+                f"isolated native feature remains enabled: {feature}",
+            )
+        configs = [
+            source_argv[index + 1]
+            for index, value in enumerate(source_argv[:-1])
+            if value in ("--config", "-c")
+        ]
+        require('approval_policy="never"' in configs, "isolated native approval policy drift")
+        require('web_search="disabled"' in configs, "isolated native web search remains enabled")
+        require(
+            any(
+                value.startswith("developer_instructions=")
+                and "Boundary:" in value
+                and "task supplies the exact indexed project name" in value
+                for value in configs
+            ),
+            "isolated native role instructions were not promoted",
+        )
+        native_mcp_configs = [value for value in configs if value.startswith("mcp_servers=")]
+        require(len(native_mcp_configs) == 1, "isolated native MCP config is not singular")
+        native_mcp_config = native_mcp_configs[0]
+        require('url="http://127.0.0.1:8978/mcp"' in native_mcp_config, "isolated native CodeIndexer URL drift")
+        require("enabled_tools=" in native_mcp_config and "disabled_tools=" in native_mcp_config, "isolated native MCP filters missing")
+        enabled_segment = native_mcp_config.split("enabled_tools=", 1)[1].split(",disabled_tools=", 1)[0]
+        disabled_segment = native_mcp_config.split("disabled_tools=", 1)[1].split(",default_tools_approval_mode=", 1)[0]
+        for tool in ("search_code", "read_chunk", "file_deps", "find_callers", "find_test_coverage"):
+            require(f'"{tool}"' in enabled_segment, f"isolated native CodeIndexer read tool missing: {tool}")
+        for mixed_action_tool in ("projects", "solutions", "skills", "memory_cards"):
+            require(
+                f'"{mixed_action_tool}"' not in enabled_segment
+                and f'"{mixed_action_tool}"' in disabled_segment,
+                f"mixed-action CodeIndexer tool filter drift: {mixed_action_tool}",
+            )
+        require("required=true" in native_mcp_config, "isolated native CodeIndexer is not fail-closed")
+        require(
+            'default_tools_approval_mode="approve"' in native_mcp_config,
+            "isolated native read tools still require interactive approval",
+        )
+        require(source_record["stdin"] == source_task, "native task did not remain stdin-only")
+        require(source_task not in " ".join(source_argv), "native task leaked into process arguments")
+
+        isolated_writer = subprocess.run(
+            [zsh, str(NATIVE_RUNNER), "mech_executor", str(repo)],
+            cwd=repo,
+            env=native_env,
+            input="make one bounded local edit",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(isolated_writer.returncode == 0, f"isolated writer launch failed: {isolated_writer.stderr}")
+        writer_record = json.loads(codex_record.read_text(encoding="utf-8"))
+        require(option_value(writer_record["argv"], "--sandbox") == "workspace-write", "writer sandbox was not bounded")
+
+        source_profile = trusted_agent_dir / "source_explorer.toml"
+        source_profile_text = source_profile.read_text(encoding="utf-8")
+        source_profile.write_text(source_profile_text.replace('sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"'), encoding="utf-8")
+        broadened_source = subprocess.run(
+            [zsh, str(NATIVE_RUNNER), "source_explorer", str(repo)],
+            cwd=repo,
+            env=native_env,
+            input="inspect source",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            broadened_source.returncode == 78 and "NATIVE_ROLE_SANDBOX_MISMATCH" in broadened_source.stderr,
+            "isolated native launcher accepted a broadened source profile",
+        )
+        source_profile.write_text(source_profile_text, encoding="utf-8")
+
+        source_profile.write_text(
+            source_profile_text.replace('model_reasoning_effort = "medium"', 'model_reasoning_effort = "low"'),
+            encoding="utf-8",
+        )
+        drifted_source = subprocess.run(
+            [zsh, str(NATIVE_RUNNER), "source_explorer", str(repo)],
+            cwd=repo,
+            env=native_env,
+            input="inspect source",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            drifted_source.returncode == 78 and "NATIVE_ROLE_PROFILE_CONTRACT_MISMATCH" in drifted_source.stderr,
+            "isolated native launcher accepted a drifted trusted role contract",
+        )
+        source_profile.write_text(source_profile_text, encoding="utf-8")
+
+        unsupported_native = subprocess.run(
+            [zsh, str(NATIVE_RUNNER), "unknown_role", str(repo)],
+            cwd=repo,
+            env=native_env,
+            input="inspect source",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            unsupported_native.returncode == 64 and "NATIVE_ROLE_UNSUPPORTED" in unsupported_native.stderr,
+            "isolated native launcher accepted an unknown role",
+        )
         before = {path.name: path.read_bytes() for path in agent_dir.glob("*.toml")}
         collision = subprocess.run(
             [zsh, str(SETUP), "--target", "project", "--root", str(repo), "--apply", "--yes"],

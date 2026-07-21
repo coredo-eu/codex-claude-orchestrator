@@ -214,6 +214,37 @@ means stop the child: no task assignment and no edit custody transfer. This gate
 protects the native profile contract; sandbox inheritance is a separate runtime
 limitation and is not corrected by configuration.
 
+The custom-agent `sandbox_mode` is a role default, not proof that a child was
+narrowed below the parent turn. A built-in child inherits the parent turn's live
+sandbox policy. Use it only when the observed child policy is no broader than
+the selected role profile.
+
+When the parent policy is broader, or the current native tool surface rejects
+`agent_type`, run the role as a separate non-interactive Codex process instead:
+
+```text
+print -r -- "<bounded task>" | \
+  <skill-dir>/scripts/run-native-agent.zsh source_explorer <absolute-root>
+```
+
+The launcher reads only a regular, non-symlink user-level role profile and
+requires its role contract to match the bundled template; a repository-owned
+profile is not a trusted isolation authority. Install the trusted copy with
+`setup-native-agents.zsh --target user`. The selected model remains the model
+explicitly installed in that profile. The launcher passes the task only on stdin and uses
+`codex exec --ignore-user-config` with an explicit `--sandbox`, disables hooks,
+apps, web search, and nested agents, and refuses `danger-full-access`. Its output
+is evidence awaiting Codex verification; it is not a child thread or a custody
+transfer receipt. Never run this isolated path and a built-in child for the same
+outcome. This branch also injects the same validated loopback CodeIndexer
+endpoint with an MCP `enabled_tools` allowlist containing only pure read/search
+operations plus an explicit deny-list for the remaining known server tools.
+Those allowlisted reads are pre-approved for non-interactive use;
+mixed-action management tools are not exposed to the native role. Before launch,
+the owning Codex should resolve the exact registered CodeIndexer project name and
+include it in the bounded task. If that name is unavailable, the role uses
+ordinary source tools instead of guessing or requesting management tools.
+
 Optional native role templates are installed separately and never by plugin
 activation. Preview first:
 

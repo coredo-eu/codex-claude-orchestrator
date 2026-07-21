@@ -196,6 +196,20 @@ selects the worker.
 | `reviewer` | `gpt-5.6-terra` | `high` | correctness, regression, and evidence review |
 | `security_reviewer` | `gpt-5.6-sol` | `high` | focused security, privacy, credential, and authorization review |
 
+Native routing is explicit: `task_name` names a semantic task instance only;
+`agent_type` selects the installed custom profile. For example, use
+`task_name=authz_source_discovery`, `agent_type=source_explorer`, and
+`fork_turns=none`. The native receipt must return the same non-empty
+`agent_role` (`source_explorer` in this example) before assigning work or
+transferring custody. Missing or mismatched `agent_role` fails closed. Do not
+encode a role in `task_name`, omit `agent_type`, or use Claude's
+`subagent_type` field for native routing.
+
+With an explicit `agent_type`, `fork_turns=all` and the default are invalid;
+use `none` or a bounded numeric value. An omitted `agent_type` selects the
+platform default rather than a custom profile. Sandbox inheritance is a
+separate runtime limitation, not a configuration-routing fix.
+
 ## A concrete example
 
 Suppose the user asks Codex to fix an intermittent authorization regression:

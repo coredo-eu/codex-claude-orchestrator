@@ -183,6 +183,37 @@ or the exact worker cannot be recovered.
    Add read-only explorer/reviewer roles or a post-custody test runner only when
    they materially improve confidence.
 
+### Native routing gate
+
+Native Codex roles are a separate routing surface from Claude subagents. For a
+native dispatch, `task_name` is only a semantic instance identifier (for
+example, `authz_source_discovery`); it never selects a profile. Select an
+installed custom native profile with the mandatory `agent_type` field, such as
+`source_explorer`, `mech_executor`, or `test_runner`. Claude's corresponding
+field is `subagent_type`; do not substitute it for native routing.
+
+```json
+{
+  "task_name": "gateway_minimal_reuse_audit",
+  "agent_type": "source_explorer",
+  "fork_turns": "none",
+  "message": "<bounded outcome, context, evidence, and handoff>"
+}
+```
+
+When an explicit native `agent_type` is used, set `fork_turns` to `none` or a
+bounded numeric value. `fork_turns=all` and its default are incompatible with
+an explicit role because a full-history fork inherits the parent role, model,
+and effort. Do not use an omitted `agent_type` as a fallback: it selects the
+platform default rather than an installed custom profile.
+
+Before transferring any custody, fail closed unless the dispatch receipt has a
+non-empty `agent_role` exactly equal to the requested `agent_type`. A missing
+or mismatched role, or a model/effort mismatch against the selected profile,
+means stop the child: no task assignment and no edit custody transfer. This gate
+protects the native profile contract; sandbox inheritance is a separate runtime
+limitation and is not corrected by configuration.
+
 Optional native role templates are installed separately and never by plugin
 activation. Preview first:
 

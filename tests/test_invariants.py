@@ -226,6 +226,28 @@ def main() -> int:
             require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
         require(len(instructions.group(1).split()) <= 85, f"native prompt is no longer lean: {role}")
 
+    native_routing_contract = (
+        "`task_name` is only a semantic instance identifier",
+        "mandatory `agent_type` field",
+        "field is `subagent_type`; do not substitute it for native routing",
+        "`fork_turns=all` and its default are incompatible with",
+        "non-empty `agent_role` exactly equal to the requested `agent_type`",
+        "means stop the child: no task assignment and no edit custody transfer",
+        "sandbox inheritance is a separate runtime",
+        "not corrected by configuration",
+    )
+    for phrase in native_routing_contract:
+        require(phrase in skill_text, f"native routing contract missing: {phrase}")
+
+    readme = read(ROOT / "README.md")
+    for phrase in (
+        "`agent_type` selects the installed custom profile",
+        "Missing or mismatched `agent_role` fails closed",
+        "`fork_turns=all` and the default are invalid",
+        "`subagent_type` field for native routing",
+    ):
+        require(phrase in readme, f"native routing documentation missing: {phrase}")
+
     for phrase in (
         "Codex owns user intent",
         "minimizes end-to-end model cost and elapsed time",
@@ -233,6 +255,8 @@ def main() -> int:
         "permanently local-only",
         "exact current-user authorization",
         "Fallback transfers ownership",
+        "pass the exact custom profile through `agent_type`",
+        "renaming `task_name` is not a routing fallback",
     ):
         require(phrase in policy, f"opt-in policy missing: {phrase}")
 

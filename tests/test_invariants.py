@@ -46,7 +46,7 @@ def main() -> int:
     manifest = json.loads(read(PLUGIN / ".codex-plugin/plugin.json"))
     require(manifest["name"] == PLUGIN.name, "plugin folder and manifest names differ")
     require(re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"]) is not None, "strict semver required")
-    require(manifest["version"] == "0.3.0", "release version drift")
+    require(manifest["version"] == "0.3.1", "release version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"
@@ -81,6 +81,7 @@ def main() -> int:
     retire = read(SKILL / "scripts/retire-native-fallback.zsh")
     toggle = read(SKILL / "scripts/toggle-agents.zsh")
     setup = read(SKILL / "scripts/setup-native-agents.zsh")
+    native_runner = read(SKILL / "scripts/run-native-agent.zsh")
     policy = read(SKILL / "references/codex-policy-snippet.md")
     agent_roster = json.loads(read(SKILL / "assets/worker-agents.json"))
 
@@ -227,6 +228,40 @@ def main() -> int:
             require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
         require(len(instructions.group(1).split()) <= 85, f"native prompt is no longer lean: {role}")
 
+    for marker in (
+        '--sandbox "$sandbox_mode"',
+        "--ignore-user-config",
+        "--disable multi_agent",
+        "--disable apps",
+        "--disable hooks",
+        "approval_policy=\"never\"",
+        "web_search=\"disabled\"",
+        "mcp_servers={}",
+        "NATIVE_ROLE_SANDBOX_MISMATCH",
+        "NATIVE_TRUSTED_ROLE_PROFILE_MISSING",
+        "NATIVE_ROLE_PROFILE_CONTRACT_MISMATCH",
+        "CODEX_NATIVE_ISOLATED_START",
+    ):
+        require(marker in native_runner, f"isolated native launcher missing: {marker}")
+    require(
+        'source_explorer|reviewer|security_reviewer)' in native_runner
+        and 'required_sandbox="read-only"' in native_runner,
+        "read-only native role map drift",
+    )
+    require(
+        'mech_executor|test_runner)' in native_runner
+        and 'required_sandbox="workspace-write"' in native_runner,
+        "write-capable native role map drift",
+    )
+    require('task=$(cat)' in native_runner and 'print -rn -- "$task"' in native_runner, "native task is not stdin-only")
+    for phrase in (
+        "custom-agent `sandbox_mode` is a role default",
+        "run-native-agent.zsh source_explorer",
+        "Never run this isolated path",
+        "repository-owned\nprofile is not a trusted isolation authority",
+    ):
+        require(phrase in skill_text, f"native sandbox contract missing: {phrase}")
+
     for phrase in (
         "Codex owns user intent",
         "minimizes end-to-end model cost and elapsed time",
@@ -236,6 +271,8 @@ def main() -> int:
         "Fallback transfers ownership",
         "pass the exact custom profile through `agent_type`",
         "renaming `task_name` is not a routing fallback",
+        "parent runtime is broader than the role",
+        "never a repository-owned",
     ):
         require(phrase in policy, f"opt-in policy missing: {phrase}")
 

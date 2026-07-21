@@ -202,6 +202,30 @@ rejected, `agent_role` is null or mismatched, or the expected profile is not
 applied, stop the child and fail closed. Never retry by substituting the role
 name into `task_name`.
 
+The custom-agent `sandbox_mode` is a role default, not proof that a child was
+narrowed below the parent turn. A built-in child inherits the parent turn's live
+sandbox policy. Use it only when the observed child policy is no broader than
+the selected role profile.
+
+When the parent policy is broader, or the current native tool surface rejects
+`agent_type`, run the role as a separate non-interactive Codex process instead:
+
+```text
+print -r -- "<bounded task>" | \
+  <skill-dir>/scripts/run-native-agent.zsh source_explorer <absolute-root>
+```
+
+The launcher reads only a regular, non-symlink user-level role profile and
+requires its role contract to match the bundled template; a repository-owned
+profile is not a trusted isolation authority. Install the trusted copy with
+`setup-native-agents.zsh --target user`. The selected model remains the model
+explicitly installed in that profile. The launcher passes the task only on stdin and uses
+`codex exec --ignore-user-config` with an explicit `--sandbox`, disables hooks,
+apps, web search, inherited MCP servers, and nested agents, and refuses
+`danger-full-access`. Its output is evidence awaiting Codex verification; it is
+not a child thread or a custody transfer receipt. Never run this isolated path
+and a built-in child for the same outcome.
+
 Optional native role templates are installed separately and never by plugin
 activation. Preview first:
 

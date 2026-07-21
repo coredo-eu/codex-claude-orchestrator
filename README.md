@@ -237,7 +237,7 @@ restore procedural scaffolding.
 
 ## Status and prerequisites
 
-Version `0.3.0` is an early, local-execution release.
+Version `0.3.1` is an early, local-execution release.
 
 "Local execution" describes the orchestration, processes, repository access,
 leases, and custody state. Model requests and supplied content are still handled
@@ -425,6 +425,29 @@ role/model/effort. Verify exposed `agent_role` plus the expected model/effort
 before handing over custody. A rejected, null, or mismatched role fails closed;
 putting the role name in `task_name` does not select the profile.
 
+The built-in child also inherits the parent turn's live sandbox. Therefore a
+`source_explorer.toml` value of `read-only` is not, by itself, proof that a
+child spawned from a `danger-full-access` turn was narrowed. If the observed
+parent/child policy is broader than the role—or the current tool surface does
+not accept `agent_type`—use the isolated launcher instead:
+
+```zsh
+printf '%s\n' '<bounded source question>' | \
+  "$SKILL_DIR/scripts/run-native-agent.zsh" \
+  source_explorer /absolute/project/root
+```
+
+This starts a separate `codex exec` run with the trusted user-level role's model,
+reasoning effort, instructions, and explicit sandbox. It ignores user runtime
+defaults, disables hooks, apps, web search, inherited MCP servers, and nested
+agents, refuses a sandbox broader than the bundled role contract, and receives
+the task only through stdin. A repository-owned profile is never used as the
+isolation authority; install the regular, non-symlink trusted copy with
+`setup-native-agents.zsh --target user`. Its contract must match the bundled
+template, while its explicitly installed model is preserved. The result is
+evidence for the orchestrator, not a child-thread receipt. Do not launch both
+paths for the same outcome.
+
 The templates are:
 
 - `source_explorer` — read-only source reconstruction;
@@ -491,10 +514,11 @@ Native fallback is an ownership transfer:
 1. stop input to Claude and obtain a clean terminal handoff;
 2. prove the registered process group is empty and edit custody has returned;
 3. run `retire-native-fallback.zsh <root> <uuid> <task-id>`;
-4. launch the native owner with an explicit matching `agent_type` and a
-   non-full-history `fork_turns` value;
-5. verify exposed role/model/effort metadata, then begin native writes only
-   after both that check and the retirement marker succeed.
+4. launch the native owner either with an explicit matching `agent_type` and a
+   non-full-history `fork_turns` value when the parent sandbox is no broader, or
+   with `run-native-agent.zsh` when isolation from the parent policy is needed;
+5. verify the selected path's role/model/effort/sandbox evidence, then begin
+   native writes only after both that check and the retirement marker succeed.
 
 Retirement holds the global gate, validates thread/root/UUID registration,
 checks leases, durable registrations, the process table, and every overlapping

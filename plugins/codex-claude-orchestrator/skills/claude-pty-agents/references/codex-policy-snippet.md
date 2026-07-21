@@ -44,6 +44,12 @@ task identifier and pass the exact custom profile through `agent_type`. Use
 inherits the parent role/model/effort. Verify exposed `agent_role` and expected
 model/effort before transferring custody. Missing, rejected, null, or mismatched
 role metadata fails closed; renaming `task_name` is not a routing fallback.
+The role file's sandbox is a default, not proof of a narrower child policy. If
+the parent runtime is broader than the role, use the bundled isolated native
+launcher, which validates the installed profile and starts `codex exec` with
+that explicit sandbox. The isolation launcher trusts only the user-level role
+copy whose contract matches the bundled template, never a repository-owned
+profile. Never duplicate the same outcome across both paths.
 
 Give an edit-capable worker a compact contract: Outcome, observable Done when,
 Boundaries, Authoritative context, Non-goals, and Required handoff. Preserve

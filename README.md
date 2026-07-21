@@ -131,9 +131,11 @@ source in both CLIs before relying on included plan usage.
 3. **Codex creates a bounded contract.** The handoff states the outcome, an
    observable `Done when`, boundaries, authoritative context, non-goals, and the
    evidence required back.
-4. **The plugin launches or reuses one worker.** Its registration is bound to
-   the current Codex thread and canonical repository root. A lease prevents a
-   second registered writer in an overlapping worktree.
+4. **The plugin launches or reuses a worker.** Its registration is bound to the
+   current Codex thread and canonical repository root, and its lease is keyed by
+   its own session UUID. Codex may run any number of its own workers, including
+   several in one root; the lease prevents only a second holder of that same
+   session.
 5. **The Opus parent owns execution.** It receives the task body through the PTY,
    never as a process argument, and chooses its own method.
 6. **Claude routes supporting packages.** Search and triage go to Haiku,
@@ -382,8 +384,10 @@ observer; they remain usable but are reported as `unobserved_legacy`, never as
 fresh context.
 
 Rotation is optional, not counter-driven. It succeeds only after Codex attests a
-terminal handoff and custody return and the runtime finds no live overlapping
-lease, process group, or exact worker process. The retirement record makes the
+terminal handoff and custody return and the runtime finds no live lease, process
+group, or worker process for that exact session. Another Codex-owned worker in
+the same root is a separate lifecycle and does not block it. The retirement
+record makes the
 old UUID non-resumable. `launch-worker.zsh --successor-of <uuid>` records each
 registered attempt by storing the predecessor and rotation lineage in the new
 registration. A failed attempt does not reserve the lineage or prevent a retry.
@@ -469,11 +473,24 @@ model of the main Codex session; this plugin never pins it.
 | Codex orchestrator | Material architecture or product tradeoffs, executor choice, authority expansion, conflicts, independent verification, final verdict | Treat a worker handoff as completion or control standalone Claude |
 | Codex-owned Claude parent | One bounded local lifecycle in one canonical root | Commit, push, publish, deploy, service control, external messages, host administration, credential operations, destructive remediation, config changes |
 | Claude subagent | One role-specific supporting package; only implementer or long-horizon can receive edit custody | Expand authority, overlap another writer, recursively delegate, write coordination state |
-| Native fallback | The same unchanged contract after verified transfer | Overlap a live Claude writer or resume a retired assignment |
+| Native fallback | The same unchanged contract after verified transfer | Take over before the exact Claude session is proven dead, or resume a retired assignment |
 
-One canonical worktree has one edit-capable owner. The launcher creates an
-atomic lease keyed by the canonical root and a durable registration bound to a
-hash of the current Codex thread. The raw thread identifier is not stored.
+Ownership, not scope, is the launcher's concurrency boundary. Each worker takes
+an atomic lease keyed by its own session UUID plus a durable registration bound
+to a hash of the current Codex thread; the raw thread identifier is not stored.
+Any number of Codex-owned workers may run in one canonical root, and no launch
+fails because another Claude process or registered worker shares that root.
+There are no reader and writer modes.
+
+What the runtime does enforce is that no Codex thread controls a session it does
+not own. Resume, assignment, successor lineage, rotation, and native-fallback
+retirement each require the exact current thread, root, and UUID registration
+and otherwise fail closed; a live UUID cannot be resumed twice, proven by its
+lease and independently by its registered process group; state too incomplete or
+contradictory to prove death is refused rather than read as a dead worker; and a
+foreign or standalone Claude session is never adopted or discovered by name.
+Keeping one edit-capable owner per overlapping edit scope stays a Codex
+task-assignment judgment.
 
 A live worker receives a private per-session runtime snapshot with directory
 mode `0700` and file modes `0600`/`0700`: generated settings, worker prompt,
@@ -520,9 +537,10 @@ Native fallback is an ownership transfer:
 5. verify the selected path's role/model/effort/sandbox evidence, then begin
    native writes only after both that check and the retirement marker succeed.
 
-Retirement holds the global gate, validates thread/root/UUID registration,
-checks leases, durable registrations, the process table, and every overlapping
-registered process group. A retired UUID cannot be resumed. These are
+Retirement holds the global gate, validates thread/root/UUID registration, and
+checks that session's lease, durable registration, registered process group, and
+exact worker process in the process table. Unrelated Codex-owned workers in the
+same root are not consulted. A retired UUID cannot be resumed. These are
 cooperative controls, not proof against a process deliberately detached from its
 group; after a crash, lost PTY, or ambiguous identity, stay read-only or use an
 isolated worktree.
@@ -554,10 +572,16 @@ it is not a log-prevention or data-loss-prevention system.
 
 ## Threat model
 
-Designed to resist accidental overlap and common authority drift:
+Designed to resist control of another principal's session and common authority
+drift:
 
-- canonical-root leases prevent two registered writers in overlapping scopes;
-- current-thread registration prevents UUID-only resume;
+- session-keyed leases prevent two holders of one session and let unrelated
+  Codex-owned workers share a root without collision;
+- current-thread registration prevents UUID-only resume and cross-thread
+  assignment, rotation, or retirement;
+- resume, rotation, and retirement each prove the exact session is dead through
+  its lease and its registered process group, and refuse when state is too
+  incomplete to prove it;
 - retirement makes native transfer non-resumable and fails closed on a live
   process;
 - a global gate serializes launch, disable, and retirement state transitions;
@@ -597,9 +621,13 @@ approval response.
 
 The self-check uses a clean temporary home and fake Claude process. It verifies
 manifest structure, shell syntax, exact role routing, snapshot permissions,
-clean-profile argv/environment, concurrent writer rejection, fail-closed live
-retirement, retired resume rejection, kill-switch behavior, native installer
-safety, and absence of private paths or credential-shaped data.
+clean-profile argv/environment, concurrent same-root workers with distinct
+session leases, cross-thread control rejection, duplicate live-resume rejection
+both with and without a lease directory, fail-closed handling of unprovable
+liveness, per-session retirement and rotation beside a live sibling worker,
+non-interference with a visible standalone Claude, retired resume rejection,
+kill-switch behavior, native installer safety, and absence of private paths or
+credential-shaped data.
 
 ```zsh
 ./scripts/self-check.zsh

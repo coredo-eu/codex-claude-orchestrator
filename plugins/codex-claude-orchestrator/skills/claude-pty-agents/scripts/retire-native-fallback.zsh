@@ -24,7 +24,6 @@ task_id="$3"
 path_hash=$(cco_hash "$root")
 thread_hash=$(cco_hash "$codex_thread_id")
 registration="$CCO_SESSION_ROOT/$session_uuid"
-lease="$CCO_LEASE_ROOT/$path_hash"
 
 cco_acquire_gate || cco_die $? "CLAUDE_GATE_BUSY: $CCO_GATE_LOCK"
 gate_held=1
@@ -53,10 +52,15 @@ if [[ -r "$retirement" ]]; then
   cco_die 75 "CLAUDE_RETIRE_CONFLICT: uuid=$session_uuid state=${existing_state:-invalid} task_id=${existing_task:-unknown}"
 fi
 
-# Native edit custody cannot begin while a verified Codex-owned worker still
-# overlaps this scope. Rotation uses the same liveness proof.
-if overlap_reason=$(cco_live_overlap_reason "$root"); then
-  cco_die 75 "CLAUDE_RETIRE_WORKER_STILL_LIVE: $overlap_reason"
+# Native fallback cannot take over this assignment while this exact session is
+# still live. Rotation uses the same per-session liveness proof; unrelated
+# Codex-owned workers in the same root are outside this session's lifecycle.
+live_status=0
+live_reason=$(cco_worker_live_reason "$session_uuid" "$root" "$path_hash") || live_status=$?
+if (( live_status == 0 )); then
+  cco_die 75 "CLAUDE_RETIRE_WORKER_STILL_LIVE: $live_reason"
+elif (( live_status != 1 )); then
+  cco_die 70 "CLAUDE_RETIRE_LIVENESS_UNPROVEN: uuid=$session_uuid root=$root"
 fi
 
 umask 077

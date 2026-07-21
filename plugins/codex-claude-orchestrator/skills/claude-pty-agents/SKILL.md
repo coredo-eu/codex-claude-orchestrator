@@ -5,10 +5,13 @@ description: Launch, reuse, and safely retire persistent Claude Code workers own
 
 # Claude PTY agents
 
-Use one persistent Claude Code process per canonical worktree. Keep Codex as the
-owner of intent, material architecture or product tradeoffs, authority,
-conflicts, independent verification, and the final verdict. Treat this skill as
-transport and custody policy, never as additional authority.
+Use persistent Claude Code processes owned by this Codex thread. Launch as many
+as the work needs, including several in one canonical worktree; the launcher
+imposes no limit and never refuses a launch because another Claude process or
+registered worker shares the root. Keep Codex as the owner of intent, material
+architecture or product tradeoffs, authority, conflicts, independent
+verification, and the final verdict. Treat this skill as transport and custody
+policy, never as additional authority.
 
 ## Contract and boundaries
 
@@ -90,6 +93,30 @@ lease from the JSON object after `CODEX_PTY_WORKER_READY`. Reuse only that
 current-thread mapping.
 Never use bare `claude -c`, an unqualified `--resume`, or another session.
 
+## Ownership is the only concurrency boundary
+
+The launcher places no limit on how many Codex-owned workers exist, including
+several in one canonical root. Each worker takes a lease keyed by its own
+session UUID, so same-root launches cannot collide, and a launch never fails
+merely because another Claude process or registered worker shares that cwd or
+root. There are no reader and writer modes; every worker is an ordinary worker.
+
+The boundary is control of another principal's session. Resume, assignment,
+successor lineage, rotation, and native-fallback retirement all require the
+exact current `CODEX_THREAD_ID`, canonical root, and UUID registration, and fail
+closed otherwise. Liveness and retirement checks target only the named session:
+another live worker in the same root never blocks its lifecycle, while resume
+refuses a UUID that is still live by its own lease *or* its registered process
+group, so deleting a lease directory cannot let a second process attach to a
+live session. A foreign or standalone Claude session is never adopted, resumed,
+signalled, or discovered by process name. Lease or registration state that is
+malformed, contradictory, or too incomplete to prove death fails closed rather
+than reading as a dead worker.
+
+Concurrent same-root workers still share one worktree, so avoid giving two of
+them overlapping edit scope; that is a task-assignment judgment for Codex, not a
+launcher restriction.
+
 Resume a dead, registered worker only after validating the same thread/root and
 confirming no native transfer:
 
@@ -168,8 +195,10 @@ or the exact worker cannot be recovered.
    process-group checks catch same-group descendants, but cooperative policy is
    not proof against a deliberately detached daemon. After a crash or ambiguous
    PTY loss, keep native work read-only or move it to an isolated root.
-2. Retire the current registration; the script refuses while any overlapping
-   registered process group is live:
+2. Retire the current registration; the script refuses while this exact
+   session's lease, registered process group, or worker process is still live.
+   Other Codex-owned workers in the same root are a separate lifecycle and do
+   not block it:
 
    ```text
    <skill-dir>/scripts/retire-native-fallback.zsh <absolute-root> <uuid> <task-id>

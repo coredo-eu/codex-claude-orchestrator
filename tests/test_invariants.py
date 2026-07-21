@@ -184,10 +184,47 @@ def main() -> int:
     require("CLAUDE_RESUME_RETIRED" in launcher, "retired resume rejection missing")
     require("CLAUDE_RESUME_OWNERSHIP_UNPROVEN" in launcher, "thread/root resume validation missing")
     require("CODEX_THREAD_ID_MISSING" in launcher, "current-thread preflight missing")
-    require("LEASE_SCOPE_CONFLICT" in launcher and "LEASE_CONFLICT" in launcher, "single-writer lease checks missing")
+    require('lease="$CCO_LEASE_ROOT/$session_uuid"' in launcher, "new leases are not keyed by session identity")
+    require("LEASE_CONFLICT" in launcher, "same-session lease check missing")
+    require("LEASE_PROCESS_GROUP_CONFLICT" in launcher, "same-session process-group check missing")
+    require("LEASE_STATE_AMBIGUOUS" in launcher, "ambiguous lease state is not fail closed")
+    require(
+        "CLAUDE_RESUME_WORKER_STILL_LIVE" in launcher,
+        "resume does not prove the exact session is dead independently of its lease",
+    )
+    for name, text, marker in (
+        ("launcher", launcher, "CLAUDE_RESUME_LIVENESS_UNPROVEN"),
+        ("rotate", rotate, "CLAUDE_ROTATE_LIVENESS_UNPROVEN"),
+        ("retire", retire, "CLAUDE_RETIRE_LIVENESS_UNPROVEN"),
+    ):
+        require(marker in text, f"{name} treats unprovable liveness as a dead worker")
     require("PTY_PROCESS_GROUP_ISOLATION_REQUIRED" in launcher, "worker process-group isolation missing")
-    require("REGISTRATION_PROCESS_GROUP_CONFLICT" in launcher, "orphan process-group launch check missing")
-    require("cco_live_overlap_reason" in retire and "cco_live_overlap_reason" in rotate, "custody paths use different liveness proofs")
+    require(
+        "cco_worker_live_reason" in retire and "cco_worker_live_reason" in rotate,
+        "custody paths use different liveness proofs",
+    )
+    for name, text in (("launcher", launcher), ("rotate", rotate), ("retire", retire)):
+        require(
+            "cco_scope_overlaps" not in text,
+            f"cwd/root exclusivity survives in {name}; concurrency must be ownership-only",
+        )
+    require(
+        "cco_scope_overlaps" not in runtime,
+        "scope-overlap exclusivity helper survives in the runtime library",
+    )
+    require(
+        'comm=' not in launcher and 'name == "claude"' not in launcher,
+        "launcher still discovers Claude processes by name",
+    )
+    require(
+        '"$lease" == "$CCO_LEASE_ROOT/$uuid" || "$lease" == "$CCO_LEASE_ROOT/$path_hash"' in runtime,
+        "durable leases must accept session keying and the legacy root keying",
+    )
+    require("cco_session_lease" in runtime, "session lease resolution missing")
+    require(
+        "cco_session_lease" in launcher and "cco_session_lease" in read(SKILL / "scripts/assign-worker.zsh"),
+        "launch and assignment do not resolve the same session lease",
+    )
     require("cco_lease_has_durable_registration" in toggle, "toggle can act outside durable registrations")
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")

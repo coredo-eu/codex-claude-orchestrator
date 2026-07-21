@@ -19,7 +19,10 @@ Codex-owned Claude worker provided by
 when orchestrator judgment is material or delegation overhead, risk, or
 unavailability removes that value.
 
-Use one edit-capable owner per canonical worktree. A Codex-owned Claude worker
+Launch as many Codex-owned Claude workers as the work justifies, including
+several in one canonical root; the launcher imposes no count or scope limit.
+Keep one edit-capable owner per overlapping edit scope by how you assign tasks,
+not by expecting the launcher to refuse. A Codex-owned Claude worker
 is permanently local-only and may not commit, push, publish, release, deploy,
 control services, send external messages, administer the host, operate on
 credentials, or perform destructive remediation. Each such action requires
@@ -28,7 +31,9 @@ separate, exact current-user authorization and Codex review.
 Treat `$HOME/.codex/claude-pty-agents.disabled` as the sole worker ON/OFF state.
 Never launch, resume, assign, or poll a worker while it exists. Reuse only the
 PTY, UUID, canonical root, lease, and current-thread registration created by
-this Codex thread. Never control a user-launched standalone Claude session.
+this Codex thread. Never resume, assign, rotate, retire, steer, or otherwise
+adopt a session belonging to another Codex thread or to a user-launched
+standalone Claude.
 
 Fallback transfers ownership; it never duplicates execution. Claude failure
 changes the executor, not the outcome or authority. Before a

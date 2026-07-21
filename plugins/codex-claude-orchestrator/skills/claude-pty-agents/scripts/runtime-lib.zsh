@@ -100,11 +100,6 @@ cco_process_identity_matches() {
   [[ -z "$expected_group" || "$(cco_process_group "$pid")" == "$expected_group" ]]
 }
 
-cco_scope_overlaps() {
-  local left="${1%/}" right="${2%/}"
-  [[ "$left" == "$right" || "$left" == "$right"/* || "$right" == "$left"/* ]]
-}
-
 cco_is_uuid() {
   local value="$1"
   [[ "$value" != *$'\n'* ]] || return 1
@@ -203,44 +198,77 @@ cco_context_counts() {
   print -r -- "$events $acknowledged"
 }
 
-# Return the first live overlapping Codex-owned worker found across leases,
-# registered process groups, and exact process arguments.
-cco_live_overlap_reason() {
-  local root="$1" active_lease active_root active_registration
-  local active_uuid active_name active_group pid args field
-  for active_lease in "$CCO_LEASE_ROOT"/*(N/); do
-    if cco_lease_has_durable_registration "$active_lease" && cco_lease_is_live "$active_lease"; then
-      active_root=$(<"$active_lease/root")
-      if cco_scope_overlaps "$root" "$active_root"; then
-        print -r -- "uuid=$(<"$active_lease/session_uuid") root=$active_root lease=$active_lease"
-        return 0
-      fi
+# Resolve the durable lease directory that belongs to exactly this session.
+# New workers are session-keyed by UUID, so any number of Codex-owned workers
+# may hold concurrent leases in one canonical root. A legacy root-keyed lease is
+# adopted only when it names this exact session; anything else fails closed.
+cco_session_lease() {
+  local uuid="$1" path_hash="$2" candidate
+  cco_is_uuid "$uuid" || return 1
+  [[ ${#path_hash} == 64 && "$path_hash" != *[^0-9a-f]* ]] || return 1
+  candidate="$CCO_LEASE_ROOT/$uuid"
+  if [[ -e "$candidate" || -L "$candidate" ]]; then
+    [[ -d "$candidate" && ! -L "$candidate" ]] || return 1
+    # A session-keyed directory naming a different session is contradictory and
+    # is never adopted or reclaimed. A directory with no recorded session is an
+    # incomplete acquisition by this same UUID and stays reclaimable.
+    if [[ -e "$candidate/session_uuid" || -L "$candidate/session_uuid" ]]; then
+      [[ -f "$candidate/session_uuid" && ! -L "$candidate/session_uuid" &&
+         "$(<"$candidate/session_uuid")" == "$uuid" ]] || return 1
     fi
-  done
-  for active_registration in "$CCO_SESSION_ROOT"/*(N/); do
-    for field in owner_kind root session_uuid name process_group; do
-      [[ -r "$active_registration/$field" ]] || continue 2
-    done
-    [[ "$(<"$active_registration/owner_kind")" == "codex-pty-worker" ]] || continue
-    active_root=$(<"$active_registration/root")
-    cco_scope_overlaps "$root" "$active_root" || continue
-    active_uuid=$(<"$active_registration/session_uuid")
-    active_name=$(<"$active_registration/name")
-    active_group=$(<"$active_registration/process_group")
-    if cco_process_group_has_live_members "$active_group"; then
-      print -r -- "uuid=$active_uuid root=$active_root pgid=$active_group"
+    print -r -- "$candidate"
+    return 0
+  fi
+  candidate="$CCO_LEASE_ROOT/$path_hash"
+  if [[ -d "$candidate" && ! -L "$candidate" && -r "$candidate/session_uuid" ]] &&
+     [[ "$(<"$candidate/session_uuid")" == "$uuid" ]]; then
+    print -r -- "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+# Decide whether exactly this session is still live. Ownership, not scope, is
+# the boundary: other Codex-owned workers in the same or an overlapping root
+# never appear here, and standalone Claude is never discovered by process name.
+#
+#   0 - live; a human-readable reason is printed
+#   1 - proven not live
+#   2 - state is missing or malformed, so death cannot be proven (fail closed)
+cco_worker_live_reason() {
+  local uuid="$1" root="$2" path_hash="$3"
+  local lease registration reg_group reg_name pid args field
+  if lease=$(cco_session_lease "$uuid" "$path_hash"); then
+    if cco_lease_has_durable_registration "$lease" && cco_lease_is_live "$lease"; then
+      print -r -- "uuid=$uuid root=$root lease=$lease"
       return 0
     fi
-    for pid in "${(@f)$(ps -axo pid= 2>/dev/null || true)}"; do
-      pid=${pid//[[:space:]]/}
-      [[ "$pid" == <-> ]] || continue
-      args=$(cco_process_args "$pid")
-      if [[ "$args" == *"--name $active_name"* &&
-            ( "$args" == *"--session-id $active_uuid"* || "$args" == *"--resume $active_uuid"* ) ]]; then
-        print -r -- "uuid=$active_uuid root=$active_root pid=$pid"
-        return 0
-      fi
-    done
+  fi
+  registration="$CCO_SESSION_ROOT/$uuid"
+  [[ -d "$registration" && ! -L "$registration" ]] || return 1
+  for field in owner_kind root session_uuid name process_group; do
+    [[ -f "$registration/$field" && ! -L "$registration/$field" && -r "$registration/$field" ]] || return 2
+  done
+  [[ "$(<"$registration/owner_kind")" == "codex-pty-worker" &&
+     "$(<"$registration/root")" == "$root" &&
+     "$(<"$registration/session_uuid")" == "$uuid" ]] || return 2
+  reg_group=$(<"$registration/process_group")
+  reg_name=$(<"$registration/name")
+  if cco_process_group_has_live_members "$reg_group"; then
+    print -r -- "uuid=$uuid root=$root pgid=$reg_group"
+    return 0
+  fi
+  # Exact-argv scan for this one registered worker only. The name and the UUID
+  # must both match, so a foreign or standalone Claude can never be reported.
+  for pid in "${(@f)$(ps -axo pid= 2>/dev/null || true)}"; do
+    pid=${pid//[[:space:]]/}
+    [[ "$pid" == <-> ]] || continue
+    args=$(cco_process_args "$pid")
+    if [[ "$args" == *"--name $reg_name"* &&
+          ( "$args" == *"--session-id $uuid"* || "$args" == *"--resume $uuid"* ) ]]; then
+      print -r -- "uuid=$uuid root=$root pid=$pid"
+      return 0
+    fi
   done
   return 1
 }
@@ -286,7 +314,9 @@ cco_lease_has_durable_registration() {
   uuid=$(<"$lease/session_uuid")
   root=$(<"$lease/root")
   path_hash=$(cco_hash "$root")
-  [[ "$lease" == "$CCO_LEASE_ROOT/$path_hash" ]] || return 1
+  # Session-keyed leases are current; root-keyed leases are the legacy layout
+  # and stay usable by the one session that recorded them.
+  [[ "$lease" == "$CCO_LEASE_ROOT/$uuid" || "$lease" == "$CCO_LEASE_ROOT/$path_hash" ]] || return 1
   registration="$CCO_SESSION_ROOT/$uuid"
   for field in owner_kind root path_hash session_uuid process_group runtime_schema_version runtime_version; do
     [[ -r "$registration/$field" ]] || return 1

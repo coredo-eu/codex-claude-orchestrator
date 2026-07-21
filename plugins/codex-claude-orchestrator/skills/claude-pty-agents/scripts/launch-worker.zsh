@@ -79,22 +79,10 @@ safe_base=$(print -rn -- "$base" | LC_ALL=C tr -cs 'A-Za-z0-9' '-' | sed 's/^-*/
 safe_base=${safe_base[1,28]}
 worker_name="codex-pty-${safe_base}-${path_hash[1,8]}-${session_uuid[1,8]}"
 registration="$CCO_SESSION_ROOT/$session_uuid"
-lease="$CCO_LEASE_ROOT/$path_hash"
-
-# Best-effort standalone isolation: never attach to or overlap any visible
-# Claude process already rooted in the same canonical scope.
-for pid in "${(@f)$(ps -axo pid=,comm= 2>/dev/null | awk '
-  { name=$2; sub(/^.*\//, "", name); if (name == "claude") print $1 }
-' || true)}"; do
-  [[ -n "$pid" ]] || continue
-  live_cwd=$(cco_process_cwd "$pid")
-  [[ -n "$live_cwd" && -d "$live_cwd" ]] || continue
-  live_root=$(cco_canonical_root "$live_cwd" 2>/dev/null || true)
-  [[ -n "$live_root" ]] || continue
-  if cco_scope_overlaps "$root" "$live_root"; then
-    cco_die 75 "CLAUDE_CWD_CONFLICT: pid=$pid root=$root live_root=$live_root"
-  fi
-done
+# Session-unique lease. Codex may run any number of its own workers in one
+# canonical root; the only boundary is control of another principal's session,
+# so no scan of foreign or standalone Claude processes happens here.
+lease="$CCO_LEASE_ROOT/$session_uuid"
 
 context_threshold="$CCO_CONTEXT_COMPACTION_THRESHOLD"
 cco_acquire_gate || cco_die $? "CLAUDE_GATE_BUSY: $CCO_GATE_LOCK"
@@ -190,43 +178,37 @@ fi
 cco_validate_model "$parent_model" || cco_die 64 "INVALID_PARENT_MODEL"
 [[ "$runtime_schema" != "1" ]] || cco_validate_model "$legacy_subagent_model" || cco_die 64 "INVALID_SUBAGENT_MODEL"
 
-for other_lease in "$CCO_LEASE_ROOT"/*(N/); do
-  [[ "$other_lease" != "$lease" ]] || continue
-  if cco_lease_has_durable_registration "$other_lease"; then
-    other_root=$(<"$other_lease/root")
-    other_group=$(<"$other_lease/process_group")
-    if ( cco_lease_is_live "$other_lease" || cco_process_group_has_live_members "$other_group" ) && \
-       cco_scope_overlaps "$root" "$other_root"; then
-      cco_die 75 "LEASE_SCOPE_CONFLICT: root=$root live_root=$other_root lease=$other_lease"
-    fi
+# A resume must prove this exact session is dead even when its lease directory
+# is missing, so a second process can never attach to a live session file. The
+# lease alone is not that proof.
+if [[ "$mode" == "resume" ]]; then
+  resume_live_status=0
+  resume_live_reason=$(cco_worker_live_reason "$session_uuid" "$root" "$path_hash") || resume_live_status=$?
+  if (( resume_live_status == 0 )); then
+    cco_die 75 "CLAUDE_RESUME_WORKER_STILL_LIVE: $resume_live_reason"
+  elif (( resume_live_status != 1 )); then
+    cco_die 70 "CLAUDE_RESUME_LIVENESS_UNPROVEN: uuid=$session_uuid root=$root"
   fi
-done
+fi
 
-for other_registration in "$CCO_SESSION_ROOT"/*(N/); do
-  for field in owner_kind root process_group; do
-    [[ -r "$other_registration/$field" ]] || continue 2
-  done
-  [[ "$(<"$other_registration/owner_kind")" == "codex-pty-worker" ]] || continue
-  other_root=$(<"$other_registration/root")
-  other_group=$(<"$other_registration/process_group")
-  if cco_scope_overlaps "$root" "$other_root" && cco_process_group_has_live_members "$other_group"; then
-    cco_die 75 "REGISTRATION_PROCESS_GROUP_CONFLICT: root=$root live_root=$other_root pgid=$other_group"
+# Only this session's own lease can block this launch. Another live worker in
+# the same or an overlapping root holds a different session-keyed lease and is
+# never consulted, so same-root launches cannot collide.
+if existing_lease=$(cco_session_lease "$session_uuid" "$path_hash"); then
+  if cco_lease_is_live "$existing_lease"; then
+    cco_die 75 "LEASE_CONFLICT: uuid=$session_uuid root=$root lease=$existing_lease"
   fi
-done
-
-if [[ -e "$lease" ]]; then
-  if cco_lease_is_live "$lease"; then
-    cco_die 75 "LEASE_CONFLICT: root=$root lease=$lease"
-  fi
-  if cco_lease_has_durable_registration "$lease"; then
-    stale_group=$(<"$lease/process_group")
+  if cco_lease_has_durable_registration "$existing_lease"; then
+    stale_group=$(<"$existing_lease/process_group")
     cco_process_group_has_live_members "$stale_group" && \
-      cco_die 75 "LEASE_PROCESS_GROUP_CONFLICT: root=$root lease=$lease pgid=$stale_group"
+      cco_die 75 "LEASE_PROCESS_GROUP_CONFLICT: uuid=$session_uuid lease=$existing_lease pgid=$stale_group"
   fi
-  stale="$CCO_LEASE_ROOT/.stale-${path_hash}-$$"
-  /bin/mv -- "$lease" "$stale" 2>/dev/null || cco_die 75 "LEASE_RECLAIM_FAILED: $lease"
+  stale="$CCO_LEASE_ROOT/.stale-${session_uuid}-$$"
+  /bin/mv -- "$existing_lease" "$stale" 2>/dev/null || cco_die 75 "LEASE_RECLAIM_FAILED: $existing_lease"
   [[ "$stale" == "$CCO_LEASE_ROOT"/.stale-* ]] || cco_die 70 "UNSAFE_STALE_PATH"
   /bin/rm -rf -- "$stale"
+elif [[ -e "$lease" || -L "$lease" ]]; then
+  cco_die 70 "LEASE_STATE_AMBIGUOUS: uuid=$session_uuid lease=$lease"
 fi
 /bin/mkdir -- "$lease" || cco_die 75 "LEASE_ACQUIRE_FAILED: $lease"
 

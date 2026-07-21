@@ -57,10 +57,15 @@ if [[ -r "$retirement" ]]; then
   cco_die 75 "CLAUDE_ROTATE_CONFLICT: uuid=$session_uuid state=${existing_state:-invalid}"
 fi
 
-# Handoff and custody are explicit Codex attestations. Process-group death is
-# independently observable and remains the non-negotiable runtime boundary.
-if overlap_reason=$(cco_live_overlap_reason "$root"); then
-  cco_die 75 "CLAUDE_ROTATE_WORKER_STILL_LIVE: $overlap_reason"
+# Handoff and custody are explicit Codex attestations. Death of exactly this
+# session remains the non-negotiable runtime boundary; other Codex-owned workers
+# in the same root are a different principal's lifecycle and never block it.
+live_status=0
+live_reason=$(cco_worker_live_reason "$session_uuid" "$root" "$path_hash") || live_status=$?
+if (( live_status == 0 )); then
+  cco_die 75 "CLAUDE_ROTATE_WORKER_STILL_LIVE: $live_reason"
+elif (( live_status != 1 )); then
+  cco_die 70 "CLAUDE_ROTATE_LIVENESS_UNPROVEN: uuid=$session_uuid root=$root"
 fi
 
 umask 077
@@ -76,7 +81,7 @@ retirement_tmp=$(mktemp "$registration/.retirement.XXXXXX")
   '{state:$state,task_id:$task_id,session_uuid:$session_uuid,root:$root,
     retired_at:$retired_at,lineage_id:$lineage_id,
     attested:{handoff_state:$handoff_state,custody_returned:true,attested_by:"codex"},
-    verified:{no_live_overlapping_worker:true,ownership:"thread_and_root"}}' > "$retirement_tmp"
+    verified:{no_live_session:true,ownership:"thread_root_and_session"}}' > "$retirement_tmp"
 /bin/chmod 600 "$retirement_tmp"
 /bin/mv -- "$retirement_tmp" "$retirement"
 retirement_tmp=""

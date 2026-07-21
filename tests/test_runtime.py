@@ -331,6 +331,15 @@ def main() -> int:
             }
         )
 
+        # These assertions measure what the launcher sets, so Claude Code
+        # control variables from the surrounding session must not leak in.
+        for ambient in (
+            "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS",
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+            "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS",
+        ):
+            env.pop(ambient, None)
+
         claude_state = home / ".claude.json"
         claude_state.write_text(
             json.dumps(
@@ -506,20 +515,180 @@ def main() -> int:
         )
         require(not (home / ".claude").exists(), "launcher created or modified standalone Claude config")
 
+        # Ownership, not exclusivity: a second Codex-owned worker may run in the
+        # same canonical root at the same time, holding its own session-keyed
+        # lease. Nothing about the first worker blocks it.
         contender_env = env.copy()
         contender_env["FAKE_CLAUDE_RECORD"] = str(base / "contender-record.json")
+        contender_env.pop("FAKE_CLAUDE_CHILD_PID")
         contender, contender_master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=contender_env)
-        contender_output = read_pty(contender, contender_master, timeout=10)
+        contender_output = read_pty(contender, contender_master, needle="CODEX_PTY_WORKER_READY")
+        require(
+            "CODEX_PTY_WORKER_READY" in contender_output,
+            f"same-root sibling worker was rejected: {contender_output}",
+        )
+        contender_ready = json.loads(
+            next(line for line in contender_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+            .split("CODEX_PTY_WORKER_READY ", 1)[1]
+            .strip()
+        )
+        contender_uuid = contender_ready["uuid"]
+        contender_lease = Path(contender_ready["lease"])
+        require(contender_uuid != worker_uuid, "sibling worker reused the first session UUID")
+        require(contender_lease != lease, "two simultaneous same-root workers shared one lease")
+        require(
+            lease.is_dir() and contender_lease.is_dir(),
+            "a simultaneous same-root worker did not hold its own durable lease",
+        )
+        require(
+            lease.name == worker_uuid and contender_lease.name == contender_uuid,
+            f"leases are not keyed by session UUID: {lease.name} {contender_lease.name}",
+        )
+        require(
+            (contender_lease / "session_uuid").read_text(encoding="utf-8").strip() == contender_uuid,
+            "sibling lease does not record its own session identity",
+        )
+        require(process_is_live(contender.pid), "sibling worker did not stay live alongside the first worker")
+
+        # A foreign Codex thread may not steer this live sibling session.
+        foreign_thread_env = env.copy()
+        foreign_thread_env["CODEX_THREAD_ID"] = "foreign-thread"
+        foreign_assign = run_assign(zsh, repo, contender_uuid, "stolen-task", foreign_thread_env)
+        require(
+            foreign_assign.returncode == 77
+            and "CLAUDE_ASSIGN_OWNERSHIP_UNPROVEN" in foreign_assign.stderr,
+            f"a foreign thread controlled an existing UUID: {foreign_assign}",
+        )
+        foreign_rotate = run_rotate(zsh, repo, contender_uuid, "stolen-task", foreign_thread_env)
+        require(
+            foreign_rotate.returncode == 77
+            and "CLAUDE_ROTATE_OWNERSHIP_UNPROVEN" in foreign_rotate.stderr,
+            f"a foreign thread rotated an existing UUID: {foreign_rotate}",
+        )
+        foreign_retire = subprocess.run(
+            [zsh, str(RETIRE), str(repo), contender_uuid, "stolen-task"],
+            cwd=repo,
+            env=foreign_thread_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            foreign_retire.returncode == 77
+            and "CLAUDE_RETIRE_OWNERSHIP_UNPROVEN" in foreign_retire.stderr,
+            f"a foreign thread retired an existing UUID: {foreign_retire}",
+        )
+
+        # The owning thread may not resume a UUID whose session is still live.
+        duplicate_env = env.copy()
+        duplicate_env["FAKE_CLAUDE_RECORD"] = str(base / "duplicate-resume-record.json")
+        duplicate_env.pop("FAKE_CLAUDE_CHILD_PID")
+        duplicate, duplicate_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--resume", contender_uuid], cwd=repo, env=duplicate_env
+        )
+        duplicate_output = read_pty(duplicate, duplicate_master, timeout=10)
+        duplicate.wait(timeout=5)
+        os.close(duplicate_master)
+        require(
+            duplicate.returncode == 75 and "CLAUDE_RESUME_WORKER_STILL_LIVE" in duplicate_output,
+            f"duplicate resume of a live UUID was accepted: {duplicate_output}",
+        )
+        require(contender_lease.is_dir(), "rejected duplicate resume damaged the live lease")
+
+        contender.terminate()
         contender.wait(timeout=5)
         os.close(contender_master)
-        require(contender.returncode == 75, f"concurrent writer was not rejected: rc={contender.returncode} output={contender_output}")
+
+        # A standalone Claude belongs to another principal. It is visible under
+        # the worker's own canonical root and must neither be adopted nor treated
+        # as a launch conflict.
+        standalone_dir = base / "standalone bin"
+        standalone_dir.mkdir()
+        # A symlink keeps the signed system binary runnable while making the
+        # process visible as "claude", which is exactly what the removed
+        # cwd scan matched on.
+        standalone_claude = standalone_dir / "claude"
+        standalone_claude.symlink_to("/bin/sleep")
+        standalone = subprocess.Popen([str(standalone_claude), "300"], cwd=repo)
+        try:
+            observed_comm = subprocess.run(
+                ["ps", "-ww", "-p", str(standalone.pid), "-o", "comm="],
+                text=True,
+                capture_output=True,
+                check=False,
+            ).stdout.strip()
+            require(
+                Path(observed_comm).name == "claude",
+                f"standalone fixture is not visible as a claude process: {observed_comm!r}",
+            )
+            standalone_cwd = subprocess.run(
+                ["lsof", "-a", "-p", str(standalone.pid), "-d", "cwd", "-Fn"],
+                text=True,
+                capture_output=True,
+                check=False,
+            ).stdout
+            require(
+                str(repo) in standalone_cwd,
+                "standalone fixture is not rooted in the worker's canonical root",
+            )
+            bystander_env = env.copy()
+            bystander_env["FAKE_CLAUDE_RECORD"] = str(base / "bystander-record.json")
+            bystander_env.pop("FAKE_CLAUDE_CHILD_PID")
+            bystander, bystander_master = start_pty(
+                [zsh, str(LAUNCHER), str(repo)], cwd=repo, env=bystander_env
+            )
+            bystander_output = read_pty(bystander, bystander_master, needle="CODEX_PTY_WORKER_READY")
+            require(
+                "CODEX_PTY_WORKER_READY" in bystander_output,
+                f"a standalone Claude in the same root blocked a launch: {bystander_output}",
+            )
+            require(
+                "CLAUDE_CWD_CONFLICT" not in bystander_output,
+                "launcher still reports a standalone cwd conflict",
+            )
+            bystander.terminate()
+            bystander.wait(timeout=5)
+            os.close(bystander_master)
+            require(process_is_live(standalone.pid), "launcher signalled a standalone Claude process")
+        finally:
+            if standalone.poll() is None:
+                standalone.terminate()
+                standalone.wait(timeout=5)
+        require(not process_is_live(standalone.pid), "standalone fixture outlived the test")
+
+        # A legacy root-keyed lease stays usable by the session that owns it,
+        # and a root-keyed plus session-keyed pair claiming one UUID is
+        # ambiguous and must fail closed rather than pick a winner.
+        repo_path_hash = hashlib.sha256(str(repo).encode()).hexdigest()
+        legacy_layout_lease = lease.parent / repo_path_hash
+        shutil.move(str(lease), str(legacy_layout_lease))
+        legacy_layout_assign = run_assign(zsh, repo, worker_uuid, "legacy-lease-task", env)
         require(
-            any(
-                marker in contender_output
-                for marker in ("LEASE_CONFLICT", "CLAUDE_CWD_CONFLICT", "REGISTRATION_PROCESS_GROUP_CONFLICT")
-            ),
-            f"wrong concurrent rejection: {contender_output}",
+            legacy_layout_assign.returncode == 0,
+            f"a legacy root-keyed lease was unusable by its owner: {legacy_layout_assign}",
         )
+        shutil.copytree(legacy_layout_lease, lease)
+        ambiguous_assign = run_assign(zsh, repo, worker_uuid, "ambiguous-task", env)
+        require(
+            ambiguous_assign.returncode == 75
+            and "CLAUDE_ASSIGN_WORKER_NOT_LIVE" in ambiguous_assign.stderr,
+            f"ambiguous lease state did not fail closed on assignment: {ambiguous_assign}",
+        )
+        ambiguous_retire = subprocess.run(
+            [zsh, str(RETIRE), str(repo), worker_uuid, "ambiguous-task"],
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            ambiguous_retire.returncode == 75
+            and "CLAUDE_RETIRE_WORKER_STILL_LIVE" in ambiguous_retire.stderr,
+            f"ambiguous lease state did not fail closed on retirement: {ambiguous_retire}",
+        )
+        shutil.rmtree(legacy_layout_lease)
+        require(lease.is_dir(), "session-keyed lease was not restored")
 
         # The gate is driven only by completed compactions. It stores one
         # content-free line per event and one acknowledged generation.
@@ -728,6 +897,17 @@ def main() -> int:
         wait_for(other_child_record)
         other_child_pid = int(other_child_record.read_text(encoding="utf-8"))
 
+        # The first worker is dead and the second is live in the same root.
+        # Retirement targets only the named session, so it succeeds, and the
+        # live sibling keeps its own lease and process group untouched.
+        other_ready = json.loads(
+            next(line for line in other_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+            .split("CODEX_PTY_WORKER_READY ", 1)[1]
+            .strip()
+        )
+        other_uuid = other_ready["uuid"]
+        other_lease = Path(other_ready["lease"])
+        require(other_uuid != worker_uuid and other_lease != lease, "sibling worker did not get a distinct lease")
         overlap_retire = subprocess.run(
             [zsh, str(RETIRE), str(repo), worker_uuid, "runtime-test"],
             cwd=repo,
@@ -736,8 +916,14 @@ def main() -> int:
             capture_output=True,
             check=False,
         )
-        require(overlap_retire.returncode == 75, "retirement ignored another live worker in the same scope")
-        require("CLAUDE_RETIRE_WORKER_STILL_LIVE" in overlap_retire.stderr, "overlap retirement reason missing")
+        require(
+            overlap_retire.returncode == 0,
+            f"a live same-root sibling blocked retirement of a dead worker: {overlap_retire}",
+        )
+        require("CODEX_PTY_WORKER_RETIRED" in overlap_retire.stdout, "same-root retirement marker missing")
+        require(process_is_live(other_worker.pid), "retiring one worker killed its same-root sibling")
+        require(other_lease.is_dir(), "retiring one worker removed a sibling's lease")
+        require(process_is_live(other_child_pid), "retiring one worker killed a sibling descendant")
 
         sleeper = subprocess.Popen(["sleep", "30"])
         try:
@@ -766,7 +952,7 @@ def main() -> int:
             capture_output=True,
             check=False,
         )
-        require(retired.returncode == 0, f"dead worker could not be retired: {retired.stderr}")
+        require(retired.returncode == 0, f"retirement was not idempotent for the same task: {retired.stderr}")
         require("CODEX_PTY_WORKER_RETIRED" in retired.stdout, "retirement marker missing")
 
         retired_resume, retired_resume_master = start_pty(
@@ -803,12 +989,47 @@ def main() -> int:
             live_rotation.returncode == 75 and "CLAUDE_ROTATE_WORKER_STILL_LIVE" in live_rotation.stderr,
             "rotation ignored a live process group",
         )
+
+        # A sibling worker in the same root must not participate in this
+        # session's rotation, in either direction.
+        sibling_env = rotation_env.copy()
+        sibling_env["FAKE_CLAUDE_RECORD"] = str(base / "rotation sibling record.json")
+        sibling_worker, sibling_master = start_pty(
+            [zsh, str(LAUNCHER), str(rotation_repo)], cwd=rotation_repo, env=sibling_env
+        )
+        sibling_output = read_pty(sibling_worker, sibling_master, needle="CODEX_PTY_WORKER_READY")
+        require(
+            "CODEX_PTY_WORKER_READY" in sibling_output,
+            f"sibling worker was blocked by a live worker in the same root: {sibling_output}",
+        )
+        sibling_ready = json.loads(
+            next(line for line in sibling_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+            .split("CODEX_PTY_WORKER_READY ", 1)[1]
+            .strip()
+        )
+        sibling_uuid = sibling_ready["uuid"]
+        sibling_lease = Path(sibling_ready["lease"])
+        require(sibling_uuid != rotation_uuid, "sibling reused the rotating session UUID")
+
         rotation_worker.terminate()
         rotation_worker.wait(timeout=5)
         os.close(rotation_master)
 
         rotated = run_rotate(zsh, rotation_repo, rotation_uuid, "rotation-task", rotation_env)
-        require(rotated.returncode == 0, f"dead worker could not rotate: {rotated}")
+        require(
+            rotated.returncode == 0,
+            f"a live same-root sibling blocked rotation of a dead worker: {rotated}",
+        )
+        require(process_is_live(sibling_worker.pid), "rotation killed a same-root sibling")
+        require(sibling_lease.is_dir(), "rotation removed a same-root sibling's lease")
+        sibling_assignment = run_assign(zsh, rotation_repo, sibling_uuid, "sibling-task", sibling_env)
+        require(
+            sibling_assignment.returncode == 0,
+            f"sibling stopped being assignable after its neighbour rotated: {sibling_assignment}",
+        )
+        sibling_worker.terminate()
+        sibling_worker.wait(timeout=5)
+        os.close(sibling_master)
         rotation_record = marker_payload(rotated, "CODEX_PTY_WORKER_ROTATED")
         require(
             rotation_record["state"] == "rotated_context"

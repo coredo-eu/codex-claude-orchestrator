@@ -5,10 +5,13 @@ description: Launch, reuse, and safely retire persistent Claude Code workers own
 
 # Claude PTY agents
 
-Use one persistent Claude Code process per canonical worktree. Keep Codex as the
-owner of intent, material architecture or product tradeoffs, authority,
-conflicts, independent verification, and the final verdict. Treat this skill as
-transport and custody policy, never as additional authority.
+Use persistent Claude Code processes owned by this Codex thread. Launch as many
+as the work needs, including several in one canonical worktree; the launcher
+imposes no limit and never refuses a launch because another Claude process or
+registered worker shares the root. Keep Codex as the owner of intent, material
+architecture or product tradeoffs, authority, conflicts, independent
+verification, and the final verdict. Treat this skill as transport and custody
+policy, never as additional authority.
 
 ## Contract and boundaries
 
@@ -26,7 +29,15 @@ The worker is permanently local-only. It cannot commit, push, publish, deploy,
 control services, send external messages, administer the host, operate on
 credentials, modify Claude/Codex configuration, or perform destructive
 remediation. Such work requires separate Codex review and exact current-user
-authorization. Maintain one edit owner per canonical worktree.
+authorization.
+
+The launcher enforces session ownership, not worktree exclusivity: it guarantees
+that no thread steers a session it did not register, but it does not serialize
+writers. When you run more than one edit-capable worker in a worktree, give each
+one a non-overlapping edit scope yourself — nothing below will detect or prevent
+two siblings editing the same files. Never resume, assign, rotate, retire, or
+otherwise adopt a session registered by another Codex thread, or any standalone
+Claude the user started.
 
 The generated settings, deny rules, prompt, and hook are cooperative controls,
 not an OS sandbox. Bash or a malicious repository instruction can bypass path
@@ -172,8 +183,9 @@ or the exact worker cannot be recovered.
    process-group checks catch same-group descendants, but cooperative policy is
    not proof against a deliberately detached daemon. After a crash or ambiguous
    PTY loss, keep native work read-only or move it to an isolated root.
-2. Retire the current registration; the script refuses while any overlapping
-   registered process group is live:
+2. Retire the current registration; the script refuses while that exact session
+   is still live. It does not check sibling workers, so confirm yourself that no
+   other worker is writing this root before native work begins:
 
    ```text
    <skill-dir>/scripts/retire-native-fallback.zsh <absolute-root> <uuid> <task-id>

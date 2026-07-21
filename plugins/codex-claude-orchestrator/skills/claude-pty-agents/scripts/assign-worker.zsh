@@ -28,7 +28,6 @@ task_id="$3"
 path_hash=$(cco_hash "$root")
 thread_hash=$(cco_hash "$codex_thread_id")
 registration="$CCO_SESSION_ROOT/$session_uuid"
-lease="$CCO_LEASE_ROOT/$path_hash"
 threshold="$CCO_CONTEXT_COMPACTION_THRESHOLD"
 
 [[ ! -e "$CCO_DISABLED_MARKER" ]] || cco_die 78 "CLAUDE_AGENTS_DISABLED: $CCO_DISABLED_MARKER"
@@ -56,7 +55,8 @@ cco_registration_matches "$registration" "$root" "$path_hash" "$thread_hash" "$s
   cco_die 77 "CLAUDE_ASSIGN_SCHEMA_UNSUPPORTED: uuid=$session_uuid"
 runtime_schema=$(<"$registration/runtime_schema_version")
 
-[[ -r "$lease/session_uuid" && "$(<"$lease/session_uuid")" == "$session_uuid" ]] || \
+# Only the lease this exact session owns proves it is still assignable.
+lease=$(cco_worker_lease "$session_uuid") || \
   cco_die 75 "CLAUDE_ASSIGN_WORKER_NOT_LIVE: uuid=$session_uuid root=$root"
 cco_lease_is_live "$lease" || \
   cco_die 75 "CLAUDE_ASSIGN_WORKER_NOT_LIVE: uuid=$session_uuid root=$root"

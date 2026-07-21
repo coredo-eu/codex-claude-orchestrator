@@ -18,9 +18,16 @@ paths. Tests must not require Claude, Codex, API keys, or network access.
 
 Runtime changes should preserve these invariants:
 
-- one edit-capable owner per canonical worktree;
+- every worker holds a durable lease keyed by its own session UUID, so any
+  number of Codex-owned workers may share a canonical root without colliding;
+- a launch is never refused because another Claude process or registered worker
+  shares its cwd or canonical root;
+- resume, assignment, successor lineage, rotation, and native-fallback
+  retirement require the exact current thread, root, and UUID registration, and
+  fail closed across threads;
+- liveness and retirement checks target only the named session UUID;
 - a worker is registered to the current Codex thread before it is resumable;
-- native fallback never overlaps a live Claude writer;
+- native fallback never overlaps a live Claude writer it owns;
 - retirement permanently blocks that assignment from Claude resume;
 - the kill-switch marker is the only enabled/disabled state;
 - schema-2 workers snapshot the exact session-scoped agent roster and clear any

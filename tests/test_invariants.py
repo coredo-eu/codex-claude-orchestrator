@@ -183,10 +183,25 @@ def main() -> int:
     require("CLAUDE_RESUME_RETIRED" in launcher, "retired resume rejection missing")
     require("CLAUDE_RESUME_OWNERSHIP_UNPROVEN" in launcher, "thread/root resume validation missing")
     require("CODEX_THREAD_ID_MISSING" in launcher, "current-thread preflight missing")
-    require("LEASE_SCOPE_CONFLICT" in launcher and "LEASE_CONFLICT" in launcher, "single-writer lease checks missing")
+    require('lease="$CCO_LEASE_ROOT/$session_uuid"' in launcher, "lease is not keyed by the session UUID")
+    require("CLAUDE_RESUME_WORKER_STILL_LIVE" in launcher, "duplicate resume of a live session is not rejected")
     require("PTY_PROCESS_GROUP_ISOLATION_REQUIRED" in launcher, "worker process-group isolation missing")
-    require("REGISTRATION_PROCESS_GROUP_CONFLICT" in launcher, "orphan process-group launch check missing")
-    require("cco_live_overlap_reason" in retire and "cco_live_overlap_reason" in rotate, "custody paths use different liveness proofs")
+    require(
+        "cco_scope_overlaps" not in launcher and "cco_scope_overlaps" not in runtime,
+        "root-overlap exclusivity survived the ownership model",
+    )
+    require(
+        "CLAUDE_CWD_CONFLICT" not in launcher and "comm=" not in launcher,
+        "launcher still discovers foreign Claude processes by name or cwd",
+    )
+    require(
+        "cco_worker_live_reason" in retire and "cco_worker_live_reason" in rotate,
+        "custody paths use different liveness proofs",
+    )
+    require(
+        all('cco_worker_live_reason "$session_uuid"' in script for script in (retire, rotate)),
+        "custody liveness proof is not scoped to the named session UUID",
+    )
     require("cco_lease_has_durable_registration" in toggle, "toggle can act outside durable registrations")
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
@@ -305,7 +320,9 @@ def main() -> int:
     for phrase in (
         "Codex owns user intent",
         "minimizes end-to-end model cost and elapsed time",
-        "one edit-capable owner",
+        "ownership, not exclusivity",
+        "non-overlapping edit scope",
+        "belonging to another Codex thread",
         "permanently local-only",
         "exact current-user authorization",
         "Fallback transfers ownership",

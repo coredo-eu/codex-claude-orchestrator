@@ -136,9 +136,11 @@ source in both CLIs before relying on included plan usage.
 3. **Codex creates a bounded contract.** The handoff states the outcome, an
    observable `Done when`, boundaries, authoritative context, non-goals, and the
    evidence required back.
-4. **The plugin launches or reuses one worker.** Its registration is bound to
-   the current Codex thread and canonical repository root. A lease prevents a
-   second registered writer in an overlapping worktree.
+4. **The plugin launches or reuses a worker.** Its registration is bound to the
+   current Codex thread, canonical repository root, and session UUID, and it
+   takes a lease keyed by that UUID. A launch is never refused because another
+   Claude process or registered worker shares the same root, so one Codex thread
+   may run as many of its own workers as the work needs.
 5. **The Opus parent owns execution.** It receives the task body through the PTY,
    never as a process argument, and chooses its own method.
 6. **Claude routes supporting packages.** Search and triage go to Haiku,
@@ -430,9 +432,10 @@ observer; they remain usable but are reported as `unobserved_legacy`, never as
 fresh context.
 
 Rotation is optional, not counter-driven. It succeeds only after Codex attests a
-terminal handoff and custody return and the runtime finds no live overlapping
-lease, process group, or exact worker process. The retirement record makes the
-old UUID non-resumable. `launch-worker.zsh --successor-of <uuid>` records each
+terminal handoff and custody return and the runtime finds no live lease, process
+group, or worker process for that exact session UUID. Sibling workers in the
+same root are a different principal's lifecycle and neither block the rotation
+nor are touched by it. The retirement record makes the old UUID non-resumable. `launch-worker.zsh --successor-of <uuid>` records each
 registered attempt by storing the predecessor and rotation lineage in the new
 registration. A failed attempt does not reserve the lineage or prevent a retry.
 
@@ -502,12 +505,20 @@ model of the main Codex session; this plugin never pins it.
 | User | Desired outcome and exact authorization | Nothing is inferred from tool availability or old handoffs |
 | Codex orchestrator | Material architecture or product tradeoffs, executor choice, authority expansion, conflicts, independent verification, final verdict | Treat a worker handoff as completion or control standalone Claude |
 | Codex-owned Claude parent | One bounded local lifecycle in one canonical root | Commit, push, publish, deploy, service control, external messages, host administration, credential operations, destructive remediation, config changes |
-| Claude subagent | One role-specific supporting package; only implementer or long-horizon can receive edit custody | Expand authority, overlap another writer, recursively delegate, write coordination state |
-| Native fallback | The same unchanged contract after verified transfer | Overlap a live Claude writer or resume a retired assignment |
+| Claude subagent | One role-specific supporting package; only implementer or long-horizon can receive edit custody | Expand authority, adopt another session, recursively delegate, write coordination state |
+| Native fallback | The same unchanged contract after verified transfer | Adopt a live Claude session or resume a retired assignment |
 
-One canonical worktree has one edit-capable owner. The launcher creates an
-atomic lease keyed by the canonical root and a durable registration bound to a
-hash of the current Codex thread. The raw thread identifier is not stored.
+The launcher's boundary is ownership, not exclusivity. It creates an atomic
+lease keyed by the session UUID and a durable registration bound to the
+canonical root and a hash of the current Codex thread. The raw thread identifier
+is not stored. Any number of Codex-owned workers may therefore be live in one
+canonical root, each with its own lease, while no Codex thread may resume,
+assign, rotate, retire, or otherwise steer a session it did not register.
+
+Because each lifecycle check targets exactly one session UUID, retiring or
+rotating a worker proves only that that worker is dead. It does not prove the
+root is otherwise idle. When several workers share a root, serializing edit
+custody between them stays a Codex orchestration duty, not a launcher guarantee.
 
 A live worker receives a private per-session runtime snapshot with directory
 mode `0700` and file modes `0600`/`0700`: generated settings, worker prompt,
@@ -554,12 +565,13 @@ Native fallback is an ownership transfer:
 5. verify the selected path's role/model/effort/sandbox evidence, then begin
    native writes only after the retirement marker succeeds.
 
-Retirement holds the global gate, validates thread/root/UUID registration,
-checks leases, durable registrations, the process table, and every overlapping
-registered process group. A retired UUID cannot be resumed. These are
-cooperative controls, not proof against a process deliberately detached from its
-group; after a crash, lost PTY, or ambiguous identity, stay read-only or use an
-isolated worktree.
+Retirement holds the global gate, validates thread/root/UUID registration, and
+checks the lease, registered process group, and process table belonging to that
+one session UUID. A retired UUID cannot be resumed. It deliberately ignores
+sibling workers, so it is not evidence that the root is idle; confirm that
+yourself before native writes. These are cooperative controls, not proof against
+a process deliberately detached from its group; after a crash, lost PTY, or
+ambiguous identity, stay read-only or use an isolated worktree.
 
 Version `0.3.1` adds schema 4 for the pinned read-only CodeIndexer profile on top
 of schema 3's content-free compaction observer and assignment checkpoint.
@@ -589,9 +601,15 @@ it is not a log-prevention or data-loss-prevention system.
 
 ## Threat model
 
-Designed to resist accidental overlap and common authority drift:
+Designed to resist cross-principal session control and common authority drift.
+It does not arbitrate between sibling workers a single Codex thread chose to run
+in one root:
 
-- canonical-root leases prevent two registered writers in overlapping scopes;
+- session-keyed leases give every worker a distinct durable identity, so
+  same-root launches cannot collide or adopt each other's state;
+- exact thread, root, and UUID registration is required to resume, assign,
+  rotate, or retire a session, so cross-thread control fails closed;
+- a standalone or foreign Claude is never discovered, adopted, or signalled;
 - current-thread registration prevents UUID-only resume;
 - retirement makes native transfer non-resumable and fails closed on a live
   process;

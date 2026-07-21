@@ -38,6 +38,13 @@ script. Never duplicate execution. Use the smallest useful native topology:
 read-only exploration or focused review, one bounded edit owner, and a test
 runner only after edit custody returns or in an isolated root.
 
+For a role-routed native Codex child, treat `task_name` only as the semantic
+task identifier and pass the exact custom profile through `agent_type`. Use
+`fork_turns: "none"` or a bounded numeric fork; a full-history `"all"` fork
+inherits the parent role/model/effort. Verify exposed `agent_role` and expected
+model/effort before transferring custody. Missing, rejected, null, or mismatched
+role metadata fails closed; renaming `task_name` is not a routing fallback.
+
 Give an edit-capable worker a compact contract: Outcome, observable Done when,
 Boundaries, Authoritative context, Non-goals, and Required handoff. Preserve
 unrelated changes and expose no credentials, secret values, private transcripts,

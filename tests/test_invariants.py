@@ -66,6 +66,15 @@ def main() -> int:
     require(frontmatter_keys == ["name", "description"], "skill frontmatter must contain only name/description")
     require("name: claude-pty-agents" in match.group(1), "skill name drift")
 
+    for marker, message in (
+        ("`task_name` only", "native task identity is not separated from role routing"),
+        ("`agent_type`", "native custom-agent selector missing"),
+        ('`fork_turns: "all"`', "full-history native role inheritance warning missing"),
+        ("`agent_role` must equal the requested `agent_type`", "native role verification missing"),
+        ("stop the child and fail closed", "native role mismatch is not fail closed"),
+    ):
+        require(marker in skill_text, message)
+
     launcher = read(SKILL / "scripts/launch-worker.zsh")
     runtime = read(SKILL / "scripts/runtime-lib.zsh")
     rotate = read(SKILL / "scripts/rotate-worker.zsh")
@@ -225,6 +234,8 @@ def main() -> int:
         "permanently local-only",
         "exact current-user authorization",
         "Fallback transfers ownership",
+        "pass the exact custom profile through `agent_type`",
+        "renaming `task_name` is not a routing fallback",
     ):
         require(phrase in policy, f"opt-in policy missing: {phrase}")
 

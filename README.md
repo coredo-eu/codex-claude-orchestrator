@@ -417,6 +417,14 @@ selected with `--model` or `CODEX_NATIVE_AGENT_MODEL`. A repeatable
 `--role-model role=model` overrides one role and takes precedence over a
 uniform override.
 
+At launch time, keep the semantic task identifier and role selector separate:
+`task_name` names the child task, while `agent_type` must equal the exact custom
+agent `name` such as `source_explorer`. Use `fork_turns: "none"` or a bounded
+numeric fork with an explicit role; full-history `"all"` inherits the parent
+role/model/effort. Verify exposed `agent_role` plus the expected model/effort
+before handing over custody. A rejected, null, or mismatched role fails closed;
+putting the role name in `task_name` does not select the profile.
+
 The templates are:
 
 - `source_explorer` — read-only source reconstruction;
@@ -483,7 +491,10 @@ Native fallback is an ownership transfer:
 1. stop input to Claude and obtain a clean terminal handoff;
 2. prove the registered process group is empty and edit custody has returned;
 3. run `retire-native-fallback.zsh <root> <uuid> <task-id>`;
-4. begin native writes only after the retirement marker succeeds.
+4. launch the native owner with an explicit matching `agent_type` and a
+   non-full-history `fork_turns` value;
+5. verify exposed role/model/effort metadata, then begin native writes only
+   after both that check and the retirement marker succeed.
 
 Retirement holds the global gate, validates thread/root/UUID registration,
 checks leases, durable registrations, the process table, and every overlapping

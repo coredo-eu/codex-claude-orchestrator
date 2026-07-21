@@ -179,6 +179,29 @@ or the exact worker cannot be recovered.
    Add read-only explorer/reviewer roles or a post-custody test runner only when
    they materially improve confidence.
 
+Native task identity and native role selection are separate. `task_name` only
+names the task and its canonical path; it never selects a custom agent. Every
+role-routed native launch must pass `agent_type` with the exact custom-agent
+`name`. A full-history `fork_turns: "all"` (including that default) inherits the
+parent role, model, and effort, so use `fork_turns: "none"` or a bounded numeric
+fork with an explicit `agent_type`, and put required context in the task body.
+
+```json
+{
+  "task_name": "gateway_minimal_reuse_audit",
+  "agent_type": "source_explorer",
+  "fork_turns": "none",
+  "message": "<bounded outcome, context, evidence, and handoff>"
+}
+```
+
+Before transferring edit/card custody or relying on the result, verify exposed
+launch metadata: `agent_role` must equal the requested `agent_type`, and the
+model/effort must match the intended role profile below. If `agent_type` is
+rejected, `agent_role` is null or mismatched, or the expected profile is not
+applied, stop the child and fail closed. Never retry by substituting the role
+name into `task_name`.
+
 Optional native role templates are installed separately and never by plugin
 activation. Preview first:
 

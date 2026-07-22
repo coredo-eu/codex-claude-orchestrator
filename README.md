@@ -171,23 +171,23 @@ selects the worker.
 
 ### Control plane
 
-| Actor | Model | Responsibility |
-| --- | --- | --- |
-| Codex orchestrator | Main session model; never pinned by this plugin | Intent, architecture, executor choice, authority, independent verification, final verdict |
-| Claude parent | Opus by default | Persistent execution context, decomposition, routing, synthesis, worker handoff |
+| Actor | Model | Effort | Responsibility |
+| --- | --- | --- | --- |
+| Codex orchestrator | Main session model; never pinned by this plugin | Main session setting | Intent, architecture, executor choice, authority, independent verification, final verdict |
+| Claude parent | Opus by default | `max` | Persistent execution context, decomposition, routing, synthesis, worker handoff |
 
 ### Claude execution roles
 
-| Claude role | Model | Intended work |
-| --- | --- | --- |
-| `explorer` | Haiku | file search, source facts, bounded discovery |
-| `log-analyzer` | Haiku | logs, test output, classification |
-| `test-triager` | Haiku | first pass over failures |
-| `implementer` | Sonnet | ordinary bounded implementation |
-| `debugger` | Sonnet | multi-step diagnosis without intended source edits |
-| `reviewer` | Opus | complex regressions and architecture review |
-| `security-reviewer` | Opus | security, authorization, privacy, and concurrency |
-| `long-horizon` | Fable | exceptionally large autonomous outcomes only |
+| Claude role | Model | Effort | Intended work |
+| --- | --- | --- | --- |
+| `explorer` | Haiku | not supported by Haiku | file search, source facts, bounded discovery |
+| `log-analyzer` | Haiku | not supported by Haiku | logs, test output, classification |
+| `test-triager` | Haiku | not supported by Haiku | first pass over failures |
+| `implementer` | Sonnet | `high` | ordinary bounded implementation |
+| `debugger` | Sonnet | `xhigh` | multi-step diagnosis without intended source edits |
+| `reviewer` | Opus | `high` | complex regressions and architecture review |
+| `security-reviewer` | Opus | `xhigh` | security, authorization, privacy, and concurrency |
+| `long-horizon` | Fable | `xhigh` | exceptionally large autonomous outcomes only |
 
 ### Optional native Codex fallback roles
 
@@ -339,10 +339,11 @@ Parent default and non-secret override:
 export CODEX_CLAUDE_PARENT_MODEL=opus
 ```
 
-The parent model is passed with `claude --model`. The role roster is passed with
+The parent model is passed with `claude --model`, and its effort is pinned to
+`max` for newly registered workers. The role roster is passed with
 `--agents` from a private runtime snapshot. A `PreToolUse` hook rejects unlisted
 roles and mismatched per-invocation model overrides. The launcher also clears
-inherited `CLAUDE_CODE_SUBAGENT_MODEL` and legacy
+inherited `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and legacy
 `CODEX_CLAUDE_SUBAGENT_MODEL` values because Claude gives a global override
 higher precedence than per-role definitions. The worker hook prevents another
 delegation layer.

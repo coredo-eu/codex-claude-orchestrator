@@ -71,7 +71,10 @@ CODEX_CLAUDE_PARENT_MODEL=<alias-or-model-id>
 The launcher passes a private session-scoped `--agents` roster. Explorer,
 log-analyzer, and test-triager use Haiku; implementer and debugger use Sonnet;
 reviewer and security-reviewer use Opus. Long-horizon uses Claude's official
-Fable model. When Fable is outside the account's allowed model set, Claude Code
+Fable model. The Opus parent starts at `max` effort. Haiku roles use the model's
+fixed behavior because Haiku 4.5 has no configurable effort; implementer and
+reviewer use `high`, while debugger, security-reviewer, and long-horizon use
+`xhigh`. When Fable is outside the account's allowed model set, Claude Code
 inherits the Opus parent; for other availability failures, the parent retains
 the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted
 roles or mismatched model overrides. Read-only roles receive Bash in `plan`
@@ -80,8 +83,9 @@ starts in Claude Code Auto Mode to avoid manual approval queues; current Claude
 Code versions make subagents inherit parent Auto Mode, so their remaining
 read-only boundary is the role contract and absence of Edit/Write tools, not an
 OS-enforced Bash sandbox. The launcher explicitly removes inherited
-`CLAUDE_CODE_SUBAGENT_MODEL` and the legacy `CODEX_CLAUDE_SUBAGENT_MODEL`
-convention because either would collapse the role-specific routing.
+`CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and the legacy
+`CODEX_CLAUDE_SUBAGENT_MODEL` convention because those global overrides would
+collapse role-specific routing.
 
 The launcher loads no user/project/local settings sources, enables no MCP
 servers, adds a generated private overlay, and does not edit standalone Claude

@@ -169,6 +169,7 @@ payload = {
     "argv": sys.argv[1:],
     "cwd": os.getcwd(),
     "subagent_model": os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL"),
+    "effort_level": os.environ.get("CLAUDE_CODE_EFFORT_LEVEL"),
     "disable_auto_memory": os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"),
     "disable_explore_plan": os.environ.get("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS"),
     "disable_git_instructions": os.environ.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"),
@@ -325,6 +326,7 @@ def main() -> int:
                 "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
                 "CODEX_THREAD_ID": "integration-thread",
                 "CLAUDE_CODE_SUBAGENT_MODEL": "inherited-global-sentinel",
+                "CLAUDE_CODE_EFFORT_LEVEL": "low",
                 "CODEX_CLAUDE_SUBAGENT_MODEL": "legacy-global-sentinel",
                 "FAKE_CLAUDE_RECORD": str(record),
                 "FAKE_CLAUDE_CHILD_PID": str(child_record),
@@ -389,6 +391,16 @@ def main() -> int:
             "security-reviewer": "opus",
             "long-horizon": "fable",
         }
+        expected_agent_efforts = {
+            "explorer": None,
+            "log-analyzer": None,
+            "test-triager": None,
+            "implementer": "high",
+            "debugger": "xhigh",
+            "reviewer": "high",
+            "security-reviewer": "xhigh",
+            "long-horizon": "xhigh",
+        }
         require(
             ready["runtime_schema"] == "4"
             and ready["context_state"] == "observed"
@@ -405,14 +417,20 @@ def main() -> int:
         argv = observed["argv"]
         require(observed["cwd"] == str(repo), "fake Claude cwd drift")
         require(observed["subagent_model"] is None, "inherited global Claude model override was not cleared")
+        require(observed["effort_level"] is None, "inherited global Claude effort override was not cleared")
         require(observed["disable_auto_memory"] == "1", "auto-memory was not disabled")
         require(observed["disable_explore_plan"] == "1", "built-in Explore/Plan agents were not disabled")
         require(observed["disable_git_instructions"] == "1", "automatic Git instructions were not disabled")
         require(option_value(argv, "--model") == "opus", "parent model is not Opus")
+        require(option_value(argv, "--effort") == "max", "parent effort is not max")
         agents = json.loads(option_value(argv, "--agents"))
         require(
             {name: definition["model"] for name, definition in agents.items()} == expected_agent_models,
             "Claude CLI role model map drift",
+        )
+        require(
+            {name: definition.get("effort") for name, definition in agents.items()} == expected_agent_efforts,
+            "Claude CLI role effort map drift",
         )
         read_only_roles = (
             "explorer", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
@@ -838,6 +856,25 @@ def main() -> int:
             "another Codex thread resumed the worker",
         )
 
+        parent_effort_path = home / ".codex/claude-pty-sessions" / worker_uuid / "parent_effort"
+        parent_effort_value = parent_effort_path.read_text(encoding="utf-8")
+        parent_effort_path.unlink()
+        missing_effort_env = env.copy()
+        missing_effort_env["FAKE_CLAUDE_RECORD"] = str(base / "missing-effort-record.json")
+        missing_effort_env.pop("FAKE_CLAUDE_CHILD_PID")
+        missing_effort, missing_effort_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--resume", worker_uuid], cwd=repo, env=missing_effort_env
+        )
+        missing_effort_output = read_pty(missing_effort, missing_effort_master, timeout=10)
+        missing_effort.wait(timeout=5)
+        os.close(missing_effort_master)
+        require(
+            missing_effort.returncode == 77 and "CLAUDE_RESUME_EFFORT_MISSING" in missing_effort_output,
+            "an effort-aware worker resumed without its pinned parent effort",
+        )
+        parent_effort_path.write_text(parent_effort_value, encoding="utf-8")
+        parent_effort_path.chmod(0o600)
+
         resume_record = base / "resume record.json"
         resume_env = env.copy()
         resume_env.update(
@@ -865,7 +902,9 @@ def main() -> int:
         resumed_argv = resumed_observed["argv"]
         require(option_value(resumed_argv, "--resume") == worker_uuid, "Claude resume argument drift")
         require(option_value(resumed_argv, "--model") == "opus", "resume ignored pinned parent model")
+        require(option_value(resumed_argv, "--effort") == "max", "resume ignored pinned parent effort")
         require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
+        require(resumed_observed["effort_level"] is None, "resume inherited a global effort override")
         require(
             resumed_ready["runtime_schema"] == "4"
             and resumed_ready["context_state"] == "decision_required"
@@ -1229,6 +1268,8 @@ def main() -> int:
         legacy_argv = legacy_observed["argv"]
         require(option_value(legacy_argv, "--model") == "opus", "legacy parent snapshot drift")
         require(legacy_observed["subagent_model"] == "haiku", "legacy subagent snapshot drift")
+        require(legacy_observed["effort_level"] is None, "legacy resume inherited a global effort override")
+        require("--effort" not in legacy_argv, "legacy resume received a new effort policy")
         require(legacy_observed["disable_explore_plan"] is None, "legacy built-in routing changed")
         require("--agents" not in legacy_argv, "legacy resume received a schema-2 roster")
         require("--mcp-config" not in legacy_argv, "legacy resume was silently given CodeIndexer")

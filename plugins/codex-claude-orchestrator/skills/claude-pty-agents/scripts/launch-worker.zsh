@@ -69,6 +69,7 @@ worker_group=$(cco_process_group $$)
   cco_die 69 "PTY_PROCESS_GROUP_ISOLATION_REQUIRED: pid=$$ pgid=${worker_group:-unknown}; invoke the launcher as the PTY command or with exec"
 
 parent_model=${CODEX_CLAUDE_PARENT_MODEL:-opus}
+parent_effort="max"
 runtime_schema="4"
 legacy_subagent_model=""
 
@@ -167,6 +168,18 @@ if [[ "$mode" == "resume" ]]; then
     [[ -r "$registration/$snapshot" ]] || cco_die 77 "CLAUDE_RESUME_SNAPSHOT_INCOMPLETE: uuid=$session_uuid missing=$snapshot"
   done
   parent_model=$(<"$registration/parent_model")
+  if [[ -f "$registration/parent_effort" && ! -L "$registration/parent_effort" ]]; then
+    parent_effort=$(<"$registration/parent_effort")
+  elif [[ -e "$registration/parent_effort" || -L "$registration/parent_effort" ]]; then
+    cco_die 77 "CLAUDE_RESUME_EFFORT_INVALID: uuid=$session_uuid"
+  else
+    if [[ "$runtime_schema" != "1" ]]; then
+      "$CCO_JQ" -e 'type == "object" and all(.[]; has("effort") | not)' \
+        "$registration/runtime/worker-agents.json" >/dev/null 2>&1 || \
+        cco_die 77 "CLAUDE_RESUME_EFFORT_MISSING: uuid=$session_uuid"
+    fi
+    parent_effort=""
+  fi
   if [[ "$runtime_schema" == "1" ]]; then
     legacy_subagent_model=$(<"$registration/subagent_model")
   fi
@@ -189,6 +202,7 @@ if [[ -n "$predecessor_uuid" ]]; then
 fi
 
 cco_validate_model "$parent_model" || cco_die 64 "INVALID_PARENT_MODEL"
+[[ -z "$parent_effort" || "$parent_effort" == "max" ]] || cco_die 64 "INVALID_PARENT_EFFORT"
 [[ "$runtime_schema" != "1" ]] || cco_validate_model "$legacy_subagent_model" || cco_die 64 "INVALID_SUBAGENT_MODEL"
 
 # Only this session's own lease is consulted. A resume must prove the session
@@ -349,6 +363,7 @@ if [[ "$mode" == "new" ]]; then
   settings_tmp=""
 
   print -r -- "$parent_model" > "$registration/parent_model"
+  print -r -- "$parent_effort" > "$registration/parent_effort"
 fi
 
 if [[ "$runtime_schema" != "1" ]]; then
@@ -366,6 +381,19 @@ if [[ "$runtime_schema" != "1" ]]; then
     .reviewer.model == "opus" and
     .["security-reviewer"].model == "opus" and
     .["long-horizon"].model == "fable" and
+    (
+      (all(.[]; has("effort") | not)) or
+      (
+        (.explorer | has("effort") | not) and
+        (.["log-analyzer"] | has("effort") | not) and
+        (.["test-triager"] | has("effort") | not) and
+        .implementer.effort == "high" and
+        .debugger.effort == "xhigh" and
+        .reviewer.effort == "high" and
+        .["security-reviewer"].effort == "xhigh" and
+        .["long-horizon"].effort == "xhigh"
+      )
+    ) and
     .explorer.tools == ["Read", "Grep", "Glob", "Bash"] and
     .["log-analyzer"].tools == ["Read", "Grep", "Glob", "Bash"] and
     .["test-triager"].tools == ["Read", "Grep", "Glob", "Bash"] and
@@ -378,9 +406,9 @@ if [[ "$runtime_schema" != "1" ]]; then
       (.value.description | type) == "string" and
       (.value.prompt | type) == "string" and
       (if (.key == "implementer" or .key == "long-horizon") then
-        (.value | keys | sort) == ["description", "model", "prompt", "tools"]
+        (.value | del(.effort) | keys | sort) == ["description", "model", "prompt", "tools"]
       else
-        (.value | keys | sort) == ["description", "model", "permissionMode", "prompt", "tools"] and
+        (.value | del(.effort) | keys | sort) == ["description", "model", "permissionMode", "prompt", "tools"] and
         .value.permissionMode == "plan"
       end)
     )
@@ -516,7 +544,7 @@ cco_release_gate
 gate_held=0
 trap - EXIT HUP INT TERM
 
-typeset -a model_env agent_args builtin_agent_env mcp_args
+typeset -a model_env agent_args builtin_agent_env mcp_args effort_env effort_args
 if [[ "$runtime_schema" == "1" ]]; then
   model_env=("CLAUDE_CODE_SUBAGENT_MODEL=$legacy_subagent_model")
   agent_args=()
@@ -526,10 +554,16 @@ else
   agent_args=(--agents "$agents_json")
   builtin_agent_env=(CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1)
 fi
+effort_env=(-u CLAUDE_CODE_EFFORT_LEVEL)
+effort_args=()
+if [[ -n "$parent_effort" ]]; then
+  effort_args=(--effort "$parent_effort")
+fi
 mcp_args=()
 [[ "$runtime_schema" != "4" ]] || mcp_args=(--mcp-config "$runtime_mcp")
 
 exec /usr/bin/env \
+  "${effort_env[@]}" \
   "${model_env[@]}" \
   CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 \
   "${builtin_agent_env[@]}" \
@@ -538,6 +572,7 @@ exec /usr/bin/env \
   "${session_args[@]}" \
   --name "$worker_name" \
   --model "$parent_model" \
+  "${effort_args[@]}" \
   "${agent_args[@]}" \
   --no-chrome \
   --ax-screen-reader \

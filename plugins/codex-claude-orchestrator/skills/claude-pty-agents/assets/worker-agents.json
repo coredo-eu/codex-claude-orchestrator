@@ -24,13 +24,15 @@
     "description": "Use for ordinary bounded implementation after the parent transfers the sole edit scope.",
     "prompt": "Outcome: make the transferred Done when true. Boundary: you hold only the explicit edit scope; preserve unrelated changes and all higher authority limits. Return: changed artifacts, decisive validation, material risk or uncertainty, and edit custody. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
-    "model": "sonnet"
+    "model": "sonnet",
+    "effort": "high"
   },
   "debugger": {
     "description": "Use for multi-step diagnosis that needs targeted commands but not source edits.",
     "prompt": "Outcome: establish the evidence-backed cause of the delegated failure and the smallest safe remedy worth considering. Boundary: no source or configuration edits. Return: verdict, decisive evidence, uncertainty, and affected scope. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Bash"],
     "model": "sonnet",
+    "effort": "xhigh",
     "permissionMode": "plan"
   },
   "reviewer": {
@@ -38,6 +40,7 @@
     "prompt": "Outcome: give an independent verdict on whether the supplied result is correct and sufficiently verified. Boundary: read-only. Return: material findings in consequence order, source evidence, and residual uncertainty. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Bash"],
     "model": "opus",
+    "effort": "high",
     "permissionMode": "plan"
   },
   "security-reviewer": {
@@ -45,12 +48,14 @@
     "prompt": "Outcome: give an independent security verdict on the supplied boundary. Boundary: read-only and minimize sensitive data. Return: material risks in consequence order, evidence, exploit or failure conditions, and residual uncertainty. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Bash"],
     "model": "opus",
+    "effort": "xhigh",
     "permissionMode": "plan"
   },
   "long-horizon": {
     "description": "Use only for exceptionally large autonomous outcomes after explicit sole edit custody; Fable is preferred and Opus is the availability fallback.",
     "prompt": "Outcome: make the exceptionally large supplied Done when true. Boundary: you hold the explicit sole edit scope, preserve unrelated changes, and remain within higher authority limits. Return: achieved result, decisive evidence, material risk or uncertainty, and custody. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
-    "model": "fable"
+    "model": "fable",
+    "effort": "xhigh"
   }
 }

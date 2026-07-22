@@ -89,6 +89,16 @@ def main() -> int:
         "security-reviewer": "opus",
         "long-horizon": "fable",
     }
+    expected_agent_efforts = {
+        "explorer": None,
+        "log-analyzer": None,
+        "test-triager": None,
+        "implementer": "high",
+        "debugger": "xhigh",
+        "reviewer": "high",
+        "security-reviewer": "xhigh",
+        "long-horizon": "xhigh",
+    }
     expected_agent_tools = {
         "explorer": ["Read", "Grep", "Glob", "Bash"],
         "log-analyzer": ["Read", "Grep", "Glob", "Bash"],
@@ -102,6 +112,10 @@ def main() -> int:
     require(
         {name: definition.get("model") for name, definition in agent_roster.items()} == expected_agent_models,
         "Claude role model map drift",
+    )
+    require(
+        {name: definition.get("effort") for name, definition in agent_roster.items()} == expected_agent_efforts,
+        "Claude role effort map drift",
     )
     require(
         {name: definition.get("tools") for name, definition in agent_roster.items()} == expected_agent_tools,
@@ -145,13 +159,16 @@ def main() -> int:
     require("subagent_type" in router_text, "router does not inspect the requested role")
 
     require("CODEX_CLAUDE_PARENT_MODEL:-opus" in launcher, "Opus parent default missing")
+    require('parent_effort="max"' in launcher, "maximum Claude parent effort missing")
     require("CODEX_CLAUDE_SUBAGENT_MODEL:-" not in launcher, "legacy global Claude model configuration remains")
     require("-u CLAUDE_CODE_SUBAGENT_MODEL" in launcher, "inherited global Claude model override is not cleared")
+    require("-u CLAUDE_CODE_EFFORT_LEVEL" in launcher, "inherited global Claude effort override is not cleared")
     require('--agents "$agents_json"' in launcher, "session-scoped Claude roster missing")
     require("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1" in launcher, "built-in Explore/Plan disable missing")
     for agent in ("Explore", "Plan", "general-purpose", "statusline-setup", "claude-code-guide"):
         require(f"Agent({agent})" in launcher, f"built-in Claude agent is not denied: {agent}")
     require('--model "$parent_model"' in launcher, "parent model CLI pin missing")
+    require('--effort "$parent_effort"' in launcher, "parent effort CLI pin missing")
     require('--setting-sources ""' in launcher, "isolated setting sources missing")
     require('defaultMode: "auto"' in launcher, "Claude parent auto mode missing")
     require("--strict-mcp-config" in launcher, "external MCP configurations are not excluded")

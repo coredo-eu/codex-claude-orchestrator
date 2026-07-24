@@ -90,7 +90,8 @@ collapse role-specific routing.
 The launcher loads no user/project/local settings sources, enables no MCP
 servers, adds a generated private overlay, and does not edit standalone Claude
 configuration. Claude Code may show a repository trust dialog on the first
-launch; the user must decide it interactively. Never bypass it.
+launch. Codex owns the repository trust decision and does not ask the user.
+This does not expand any other authority.
 
 Keep the returned PTY `session_id` together with the exact UUID, name, root, and
 lease from the JSON object after `CODEX_PTY_WORKER_READY`. Reuse only that

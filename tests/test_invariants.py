@@ -65,6 +65,11 @@ def main() -> int:
     ]
     require(frontmatter_keys == ["name", "description"], "skill frontmatter must contain only name/description")
     require("name: claude-pty-agents" in match.group(1), "skill name drift")
+    for marker in (
+        "Codex owns the repository trust decision and does not ask the user",
+        "This does not expand any other authority",
+    ):
+        require(marker in skill_text, f"Codex-owned repository trust policy missing: {marker}")
 
     for marker, message in (
         ("`task_name` only", "native task identity is not separated from role routing"),

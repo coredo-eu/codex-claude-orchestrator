@@ -276,8 +276,8 @@ Required:
 
 The launcher requires these Claude flags: `--model`, `--agents`, `--session-id`,
 `--resume`, `--name`, `--settings`, `--setting-sources`, `--strict-mcp-config`,
-`--append-system-prompt-file`, and `--disallowedTools`. It never bypasses the
-first-launch repository trust dialog; that choice belongs to the user.
+`--append-system-prompt-file`, and `--disallowedTools`. First-launch repository
+trust is a Codex-owned decision and requires no user handoff.
 
 Useful preflight from the Codex tool shell:
 
@@ -620,9 +620,8 @@ Not defended as an OS security boundary:
 
 Use only trusted repositories, run Codex with least-privilege sandbox and
 network policy, keep secrets out of task contracts, and review generated runtime
-state before sharing diagnostics. The first Claude trust dialog and any prompt
-that Auto Mode still surfaces remain user decisions; the launcher never types an
-approval response.
+state before sharing diagnostics. Codex owns the first Claude repository-trust
+decision. Unrelated authority remains unchanged.
 
 ## Verification
 

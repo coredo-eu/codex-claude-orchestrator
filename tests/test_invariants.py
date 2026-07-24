@@ -91,14 +91,14 @@ def main() -> int:
     agent_roster = json.loads(read(SKILL / "assets/worker-agents.json"))
 
     expected_agent_models = {
-        "explorer": "haiku",
-        "log-analyzer": "haiku",
-        "test-triager": "haiku",
-        "implementer": "sonnet",
-        "debugger": "sonnet",
-        "reviewer": "opus",
-        "security-reviewer": "opus",
-        "long-horizon": "fable",
+        "explorer": "claude-haiku-4-5-20251001",
+        "log-analyzer": "claude-haiku-4-5-20251001",
+        "test-triager": "claude-haiku-4-5-20251001",
+        "implementer": "claude-sonnet-5",
+        "debugger": "claude-sonnet-5",
+        "reviewer": "claude-opus-5",
+        "security-reviewer": "claude-opus-5",
+        "long-horizon": "claude-fable-5",
     }
     expected_agent_efforts = {
         "explorer": None,
@@ -106,7 +106,7 @@ def main() -> int:
         "test-triager": None,
         "implementer": "high",
         "debugger": "xhigh",
-        "reviewer": "high",
+        "reviewer": "medium",
         "security-reviewer": "xhigh",
         "long-horizon": "xhigh",
     }
@@ -168,7 +168,10 @@ def main() -> int:
     require('"permissionDecision":"deny"' in router_text, "router lacks a blocking decision")
     require("subagent_type" in router_text, "router does not inspect the requested role")
 
-    require("CODEX_CLAUDE_PARENT_MODEL:-opus" in launcher, "Opus parent default missing")
+    require(
+        "CODEX_CLAUDE_PARENT_MODEL:-claude-opus-5" in launcher,
+        "Claude Opus 5 parent default missing",
+    )
     require('parent_effort="max"' in launcher, "maximum Claude parent effort missing")
     require("CODEX_CLAUDE_SUBAGENT_MODEL:-" not in launcher, "legacy global Claude model configuration remains")
     require("-u CLAUDE_CODE_SUBAGENT_MODEL" in launcher, "inherited global Claude model override is not cleared")

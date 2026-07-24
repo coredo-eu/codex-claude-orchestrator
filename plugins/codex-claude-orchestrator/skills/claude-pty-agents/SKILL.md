@@ -1,6 +1,6 @@
 ---
 name: claude-pty-agents
-description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with an Opus parent, role-routed Haiku/Sonnet/Opus/Fable subagents, and GPT-5.6 native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
+description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with an Opus 5 parent, role-routed Haiku 4.5/Sonnet 5/Opus 5/Fable 5 subagents, and GPT-5.6 native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
 ---
 
 # Claude PTY agents
@@ -61,7 +61,8 @@ const worker = await tools.exec_command({
 });
 ```
 
-The launcher requires `CODEX_THREAD_ID` and defaults the parent to `opus`.
+The launcher requires `CODEX_THREAD_ID` and defaults the parent to
+`claude-opus-5`.
 Override only the parent with a non-secret process variable:
 
 ```text
@@ -69,12 +70,13 @@ CODEX_CLAUDE_PARENT_MODEL=<alias-or-model-id>
 ```
 
 The launcher passes a private session-scoped `--agents` roster. Explorer,
-log-analyzer, and test-triager use Haiku; implementer and debugger use Sonnet;
-reviewer and security-reviewer use Opus. Long-horizon uses Claude's official
-Fable model. The Opus parent starts at `max` effort. Haiku roles use the model's
-fixed behavior because Haiku 4.5 has no configurable effort; implementer and
-reviewer use `high`, while debugger, security-reviewer, and long-horizon use
-`xhigh`. When Fable is outside the account's allowed model set, Claude Code
+log-analyzer, and test-triager use `claude-haiku-4-5-20251001`; implementer and
+debugger use `claude-sonnet-5`; reviewer and security-reviewer use
+`claude-opus-5`. Long-horizon uses `claude-fable-5`. The Opus 5 parent starts at
+`max` effort. Haiku roles use the model's fixed behavior because Haiku 4.5 has
+no configurable effort; implementer uses `high`, reviewer uses `medium`, and
+debugger, security-reviewer, and long-horizon use `xhigh`. When Fable is outside
+the account's allowed model set, Claude Code
 inherits the Opus parent; for other availability failures, the parent retains
 the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted
 roles or mismatched model overrides. Read-only roles receive Bash in `plan`

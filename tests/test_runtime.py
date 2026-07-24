@@ -230,14 +230,14 @@ def main() -> int:
     require(bool(zsh and jq and git), "zsh, jq, and git are required for runtime tests")
 
     route_models = {
-        "explorer": "haiku",
-        "log-analyzer": "haiku",
-        "test-triager": "haiku",
-        "implementer": "sonnet",
-        "debugger": "sonnet",
-        "reviewer": "opus",
-        "security-reviewer": "opus",
-        "long-horizon": "fable",
+        "explorer": "claude-haiku-4-5-20251001",
+        "log-analyzer": "claude-haiku-4-5-20251001",
+        "test-triager": "claude-haiku-4-5-20251001",
+        "implementer": "claude-sonnet-5",
+        "debugger": "claude-sonnet-5",
+        "reviewer": "claude-opus-5",
+        "security-reviewer": "claude-opus-5",
+        "long-horizon": "claude-fable-5",
     }
     for role, model in route_models.items():
         for supplied_model in (None, model):
@@ -261,6 +261,13 @@ def main() -> int:
                 "hook_event_name": "PreToolUse",
                 "tool_name": "Agent",
                 "tool_input": {"subagent_type": "explorer", "model": "opus"},
+            }
+        ),
+        json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "explorer", "model": "haiku"},
             }
         ),
         json.dumps(
@@ -382,14 +389,14 @@ def main() -> int:
         lease = Path(ready["lease"])
         require(ready["root"] == str(repo), "ready marker did not preserve a root containing spaces")
         expected_agent_models = {
-            "explorer": "haiku",
-            "log-analyzer": "haiku",
-            "test-triager": "haiku",
-            "implementer": "sonnet",
-            "debugger": "sonnet",
-            "reviewer": "opus",
-            "security-reviewer": "opus",
-            "long-horizon": "fable",
+            "explorer": "claude-haiku-4-5-20251001",
+            "log-analyzer": "claude-haiku-4-5-20251001",
+            "test-triager": "claude-haiku-4-5-20251001",
+            "implementer": "claude-sonnet-5",
+            "debugger": "claude-sonnet-5",
+            "reviewer": "claude-opus-5",
+            "security-reviewer": "claude-opus-5",
+            "long-horizon": "claude-fable-5",
         }
         expected_agent_efforts = {
             "explorer": None,
@@ -397,7 +404,7 @@ def main() -> int:
             "test-triager": None,
             "implementer": "high",
             "debugger": "xhigh",
-            "reviewer": "high",
+            "reviewer": "medium",
             "security-reviewer": "xhigh",
             "long-horizon": "xhigh",
         }
@@ -421,7 +428,7 @@ def main() -> int:
         require(observed["disable_auto_memory"] == "1", "auto-memory was not disabled")
         require(observed["disable_explore_plan"] == "1", "built-in Explore/Plan agents were not disabled")
         require(observed["disable_git_instructions"] == "1", "automatic Git instructions were not disabled")
-        require(option_value(argv, "--model") == "opus", "parent model is not Opus")
+        require(option_value(argv, "--model") == "claude-opus-5", "parent model is not Claude Opus 5")
         require(option_value(argv, "--effort") == "max", "parent effort is not max")
         agents = json.loads(option_value(argv, "--agents"))
         require(
@@ -841,6 +848,58 @@ def main() -> int:
         os.killpg(worker.pid, signal.SIGTERM)
         wait_for_process_exit(child_pid)
 
+        # Published schema-2/3/4 sessions keep their alias-based model
+        # snapshots and reviewer effort on resume; only newly registered
+        # workers use the exact model-ID roster.
+        parent_model_path = registration_dir / "parent_model"
+        exact_parent_model = parent_model_path.read_text(encoding="utf-8")
+        exact_agents_snapshot = agents_path.read_text(encoding="utf-8")
+        alias_by_model = {
+            "claude-haiku-4-5-20251001": "haiku",
+            "claude-sonnet-5": "sonnet",
+            "claude-opus-5": "opus",
+            "claude-fable-5": "fable",
+        }
+        alias_agents = {
+            name: {**definition, "model": alias_by_model[definition["model"]]}
+            for name, definition in agents.items()
+        }
+        alias_agents["reviewer"]["effort"] = "high"
+        agents_path.write_text(json.dumps(alias_agents, indent=2) + "\n", encoding="utf-8")
+        parent_model_path.write_text("opus\n", encoding="utf-8")
+
+        alias_record = base / "alias snapshot resume record.json"
+        alias_env = env.copy()
+        alias_env["FAKE_CLAUDE_RECORD"] = str(alias_record)
+        alias_env.pop("FAKE_CLAUDE_CHILD_PID")
+        alias_worker, alias_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--resume", worker_uuid], cwd=repo, env=alias_env
+        )
+        alias_output = read_pty(alias_worker, alias_master, needle="CODEX_PTY_WORKER_READY")
+        require("CODEX_PTY_WORKER_READY" in alias_output, f"alias snapshot did not resume: {alias_output}")
+        alias_ready_line = next(
+            (line for line in alias_output.splitlines() if "CODEX_PTY_WORKER_READY " in line), ""
+        )
+        alias_ready = json.loads(alias_ready_line.split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
+        require(
+            alias_ready["agent_models"]
+            == {name: definition["model"] for name, definition in alias_agents.items()},
+            "alias snapshot model roster drift",
+        )
+        wait_for(alias_record)
+        alias_observed = json.loads(alias_record.read_text(encoding="utf-8"))
+        require(option_value(alias_observed["argv"], "--model") == "opus", "alias parent snapshot drift")
+        require(
+            json.loads(option_value(alias_observed["argv"], "--agents")) == alias_agents,
+            "alias role snapshot drift",
+        )
+        alias_worker.terminate()
+        alias_worker.wait(timeout=5)
+        os.close(alias_master)
+
+        agents_path.write_text(exact_agents_snapshot, encoding="utf-8")
+        parent_model_path.write_text(exact_parent_model, encoding="utf-8")
+
         wrong_thread_env = env.copy()
         wrong_thread_env["CODEX_THREAD_ID"] = "different-thread"
         wrong_thread_env["FAKE_CLAUDE_RECORD"] = str(base / "wrong-thread-record.json")
@@ -901,7 +960,10 @@ def main() -> int:
         resumed_observed = json.loads(resume_record.read_text(encoding="utf-8"))
         resumed_argv = resumed_observed["argv"]
         require(option_value(resumed_argv, "--resume") == worker_uuid, "Claude resume argument drift")
-        require(option_value(resumed_argv, "--model") == "opus", "resume ignored pinned parent model")
+        require(
+            option_value(resumed_argv, "--model") == "claude-opus-5",
+            "resume ignored pinned parent model",
+        )
         require(option_value(resumed_argv, "--effort") == "max", "resume ignored pinned parent effort")
         require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
         require(resumed_observed["effort_level"] is None, "resume inherited a global effort override")

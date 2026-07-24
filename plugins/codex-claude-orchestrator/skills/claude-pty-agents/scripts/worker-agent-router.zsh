@@ -18,10 +18,10 @@ role=$(
 ) || deny
 
 case "$role" in
-  explorer|log-analyzer|test-triager) expected_model="haiku" ;;
-  implementer|debugger) expected_model="sonnet" ;;
-  reviewer|security-reviewer) expected_model="opus" ;;
-  long-horizon) expected_model="fable" ;;
+  explorer|log-analyzer|test-triager) expected_model="claude-haiku-4-5-20251001" ;;
+  implementer|debugger) expected_model="claude-sonnet-5" ;;
+  reviewer|security-reviewer) expected_model="claude-opus-5" ;;
+  long-horizon) expected_model="claude-fable-5" ;;
   *) deny ;;
 esac
 

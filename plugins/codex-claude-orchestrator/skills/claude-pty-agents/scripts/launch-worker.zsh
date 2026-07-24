@@ -68,7 +68,7 @@ worker_group=$(cco_process_group $$)
 [[ "$worker_group" == <-> && "$worker_group" -gt 1 && "$worker_group" == "$$" ]] || \
   cco_die 69 "PTY_PROCESS_GROUP_ISOLATION_REQUIRED: pid=$$ pgid=${worker_group:-unknown}; invoke the launcher as the PTY command or with exec"
 
-parent_model=${CODEX_CLAUDE_PARENT_MODEL:-opus}
+parent_model=${CODEX_CLAUDE_PARENT_MODEL:-claude-opus-5}
 parent_effort="max"
 runtime_schema="4"
 legacy_subagent_model=""
@@ -373,25 +373,47 @@ if [[ "$runtime_schema" != "1" ]]; then
       "debugger", "explorer", "implementer", "log-analyzer",
       "long-horizon", "reviewer", "security-reviewer", "test-triager"
     ] and
-    .explorer.model == "haiku" and
-    .["log-analyzer"].model == "haiku" and
-    .["test-triager"].model == "haiku" and
-    .implementer.model == "sonnet" and
-    .debugger.model == "sonnet" and
-    .reviewer.model == "opus" and
-    .["security-reviewer"].model == "opus" and
-    .["long-horizon"].model == "fable" and
     (
-      (all(.[]; has("effort") | not)) or
       (
+        .explorer.model == "claude-haiku-4-5-20251001" and
+        .["log-analyzer"].model == "claude-haiku-4-5-20251001" and
+        .["test-triager"].model == "claude-haiku-4-5-20251001" and
+        .implementer.model == "claude-sonnet-5" and
+        .debugger.model == "claude-sonnet-5" and
+        .reviewer.model == "claude-opus-5" and
+        .["security-reviewer"].model == "claude-opus-5" and
+        .["long-horizon"].model == "claude-fable-5" and
         (.explorer | has("effort") | not) and
         (.["log-analyzer"] | has("effort") | not) and
         (.["test-triager"] | has("effort") | not) and
         .implementer.effort == "high" and
         .debugger.effort == "xhigh" and
-        .reviewer.effort == "high" and
+        .reviewer.effort == "medium" and
         .["security-reviewer"].effort == "xhigh" and
         .["long-horizon"].effort == "xhigh"
+      ) or
+      (
+        .explorer.model == "haiku" and
+        .["log-analyzer"].model == "haiku" and
+        .["test-triager"].model == "haiku" and
+        .implementer.model == "sonnet" and
+        .debugger.model == "sonnet" and
+        .reviewer.model == "opus" and
+        .["security-reviewer"].model == "opus" and
+        .["long-horizon"].model == "fable" and
+        (
+          (all(.[]; has("effort") | not)) or
+          (
+            (.explorer | has("effort") | not) and
+            (.["log-analyzer"] | has("effort") | not) and
+            (.["test-triager"] | has("effort") | not) and
+            .implementer.effort == "high" and
+            .debugger.effort == "xhigh" and
+            .reviewer.effort == "high" and
+            .["security-reviewer"].effort == "xhigh" and
+            .["long-horizon"].effort == "xhigh"
+          )
+        )
       )
     ) and
     .explorer.tools == ["Read", "Grep", "Glob", "Bash"] and

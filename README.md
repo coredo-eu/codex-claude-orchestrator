@@ -56,7 +56,7 @@ daemon, and no claim to be an operating-system sandbox.
 flowchart TD
     U[User outcome and exact authority] --> C[Codex orchestrator]
     C -->|small or orchestrator-owned work| D[Codex works directly]
-    C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: opus]
+    C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: Claude Opus 5]
     O -->|search / logs / first triage| H[Haiku roles]
     O -->|implementation / debugging| S[Sonnet roles]
     O -->|review / security| P[Opus roles]
@@ -179,20 +179,20 @@ selects the worker.
 | Actor | Model | Effort | Responsibility |
 | --- | --- | --- | --- |
 | Codex orchestrator | Main session model; never pinned by this plugin | Main session setting | Intent, architecture, executor choice, authority, independent verification, final verdict |
-| Claude parent | Opus by default | `max` | Persistent execution context, decomposition, routing, synthesis, worker handoff |
+| Claude parent | `claude-opus-5` | `max` | Persistent execution context, decomposition, routing, synthesis, worker handoff |
 
 ### Claude execution roles
 
 | Claude role | Model | Effort | Intended work |
 | --- | --- | --- | --- |
-| `explorer` | Haiku | not supported by Haiku | file search, source facts, bounded discovery |
-| `log-analyzer` | Haiku | not supported by Haiku | logs, test output, classification |
-| `test-triager` | Haiku | not supported by Haiku | first pass over failures |
-| `implementer` | Sonnet | `high` | ordinary bounded implementation |
-| `debugger` | Sonnet | `xhigh` | multi-step diagnosis without intended source edits |
-| `reviewer` | Opus | `high` | complex regressions and architecture review |
-| `security-reviewer` | Opus | `xhigh` | security, authorization, privacy, and concurrency |
-| `long-horizon` | Fable | `xhigh` | exceptionally large autonomous outcomes only |
+| `explorer` | `claude-haiku-4-5-20251001` | not supported by Haiku | file search, source facts, bounded discovery |
+| `log-analyzer` | `claude-haiku-4-5-20251001` | not supported by Haiku | logs, test output, classification |
+| `test-triager` | `claude-haiku-4-5-20251001` | not supported by Haiku | first pass over failures |
+| `implementer` | `claude-sonnet-5` | `high` | ordinary bounded implementation |
+| `debugger` | `claude-sonnet-5` | `xhigh` | multi-step diagnosis without intended source edits |
+| `reviewer` | `claude-opus-5` | `medium` | complex regressions and architecture review |
+| `security-reviewer` | `claude-opus-5` | `xhigh` | security, authorization, privacy, and concurrency |
+| `long-horizon` | `claude-fable-5` | `xhigh` | exceptionally large autonomous outcomes only |
 
 ### Optional native Codex fallback roles
 
@@ -384,7 +384,7 @@ Parent default and non-secret override:
 
 ```zsh
 # Defaults shown explicitly; export only when changing them.
-export CODEX_CLAUDE_PARENT_MODEL=opus
+export CODEX_CLAUDE_PARENT_MODEL=claude-opus-5
 ```
 
 The parent model is passed with `claude --model`, and its effort is pinned to

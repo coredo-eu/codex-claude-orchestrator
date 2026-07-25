@@ -5,6 +5,27 @@ adapt it for a personal policy. Plugin installation does not apply it. Keep the
 policy narrow enough for your environment and preserve stricter existing rules.
 
 ```markdown
+## Goal-aware programmatic tool batching
+
+While an active goal is running, treat the goal and its verification criteria
+as the persistent outer control loop. On each automatic continuation, choose
+the next bounded stage from the evidence already available.
+
+Within that stage, run already-known independent read-only,
+`functions.exec`-eligible `tools.*` calls concurrently in one `functions.exec`
+program. Use `Promise.allSettled` when partial results remain useful and inspect
+every outcome; use `Promise.all` only when any failure invalidates the stage.
+Bound every nested output and the outer program output, and emit only compact
+evidence.
+
+After the batch, return to model judgment before choosing the next stage. Keep
+goal-control calls and state transitions, adaptive investigations,
+waits/resumes, approvals, citation or native-artifact retrieval, and all
+mutations direct and sequential.
+
+A successful batch is not goal completion. Continue until the goal's actual
+verification criteria are satisfied.
+
 ## Codex-to-Claude executor policy
 
 Codex owns user intent, architecture, material tradeoffs, authority expansion,

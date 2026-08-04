@@ -604,6 +604,7 @@ def main() -> int:
         for index, admission_root in enumerate(admission_roots):
             admission_env = env.copy()
             admission_env["CODEX_THREAD_ID"] = f"admission-thread-{index}"
+            admission_env["CODEX_HOME"] = str(base / f"codex-profile-{index}")
             admission_env["FAKE_CLAUDE_RECORD"] = str(base / f"admission-{index}.json")
             admission_env.pop("FAKE_CLAUDE_CHILD_PID", None)
             admission_worker, admission_master = start_pty(

@@ -40,10 +40,12 @@ Codex-owned Claude worker provided by
 when orchestrator judgment is material or delegation overhead, risk, or
 unavailability removes that value.
 
-Launch as many Codex-owned Claude workers as the work justifies, including
-several in one canonical root; the launcher imposes no count or scope limit.
-Keep one edit-capable owner per overlapping edit scope by how you assign tasks,
-not by expecting the launcher to refuse. A Codex-owned Claude worker
+The launcher admits at most two busy Claude assignments per HOME by default
+(`CODEX_CLAUDE_MAX_BUSY_WORKERS` may only be `1` or `2`), serializes active
+write assignments by canonical root, and rejects a second live worker for the
+same current thread/root. An orphaned active assignment blocks its root but not
+the busy count until explicit terminal reconciliation. This preserves one edit-capable owner
+per canonical root while an assignment is active. A Codex-owned Claude worker
 is permanently local-only and may not commit, push, publish, release, deploy,
 control services, send external messages, administer the host, operate on
 credentials, or perform destructive remediation. Each such action requires

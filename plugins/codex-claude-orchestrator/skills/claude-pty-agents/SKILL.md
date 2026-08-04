@@ -1,14 +1,11 @@
 ---
 name: claude-pty-agents
-description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with an Opus 5 parent, role-routed Haiku 4.5/Sonnet 5/Opus 5/Fable 5 subagents, and GPT-5.6 native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
+description: Launch and safely retire one bounded Claude Code stage per owned session, with a Sonnet 5 parent by default, role-routed Haiku 4.5/Sonnet 5/Opus 5/Fable 5 subagents, and GPT-5.6 native Codex fallback. Use when Claude is requested or a bounded repository stage benefits from context isolation. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
 ---
 
 # Claude PTY agents
 
-Use persistent Claude Code processes owned by this Codex thread. Launch as many
-as the work needs, including several in one canonical worktree; the launcher
-imposes no limit and never refuses a launch because another Claude process or
-registered worker shares the root. Keep Codex as the owner of intent, material
+Use persistent Claude Code processes owned by this Codex thread. Keep Codex as the owner of intent, material
 architecture or product tradeoffs, authority, conflicts, independent
 verification, and the final verdict. Treat this skill as transport and custody
 policy, never as additional authority.
@@ -22,6 +19,7 @@ Give an edit-capable worker one compact contract:
 - `Boundaries`: exact root, side effects, prohibited actions, and ownership.
 - `Authoritative context`: applicable source-of-truth material and unknowns.
 - `Non-goals`: adjacent work not to absorb.
+- `Known evidence`: concise observed facts and material uncertainty.
 - `Required handoff`: material evidence, risk, uncertainty, missing authority,
   deliberate non-actions, and custody needed for Codex to decide.
 
@@ -62,22 +60,25 @@ const worker = await tools.exec_command({
 ```
 
 The launcher requires `CODEX_THREAD_ID` and defaults the parent to
-`claude-opus-5`.
-Override only the parent with a non-secret process variable:
+`claude-sonnet-5` at `high` effort. Override only the parent with non-secret
+process variables. An Opus override must record a route class and reason:
 
 ```text
-CODEX_CLAUDE_PARENT_MODEL=<alias-or-model-id>
+CODEX_CLAUDE_PARENT_MODEL=claude-opus-5
+CODEX_CLAUDE_PARENT_EFFORT=high
+CODEX_CLAUDE_PARENT_ROUTE_CLASS=judgment
+CODEX_CLAUDE_PARENT_ROUTE_REASON=independent_review
 ```
 
 The launcher passes a private session-scoped `--agents` roster. Explorer,
 log-analyzer, and test-triager use `claude-haiku-4-5-20251001`; implementer and
 debugger use `claude-sonnet-5`; reviewer and security-reviewer use
-`claude-opus-5`. Long-horizon uses `claude-fable-5`. The Opus 5 parent starts at
-`max` effort. Haiku roles use the model's fixed behavior because Haiku 4.5 has
+`claude-opus-5`. Long-horizon uses `claude-fable-5`. The ordinary Sonnet parent
+starts at `high` effort. Haiku roles use the model's fixed behavior because Haiku 4.5 has
 no configurable effort; implementer uses `high`, reviewer uses `medium`, and
 debugger, security-reviewer, and long-horizon use `xhigh`. When Fable is outside
-the account's allowed model set, Claude Code
-inherits the Opus parent; for other availability failures, the parent retains
+the account's allowed model set, Claude Code inherits the current parent; for
+other availability failures, the parent retains
 the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted
 roles or mismatched model overrides. Read-only roles receive Bash in `plan`
 mode when the parent permission mode permits that override. The default parent
@@ -102,11 +103,12 @@ Never use bare `claude -c`, an unqualified `--resume`, or another session.
 
 ## Ownership is the only concurrency boundary
 
-The launcher places no limit on how many Codex-owned workers exist, including
-several in one canonical root. Each worker takes a lease keyed by its own
-session UUID, so same-root launches cannot collide, and a launch never fails
-merely because another Claude process or registered worker shares that cwd or
-root. There are no reader and writer modes; every worker is an ordinary worker.
+The launcher permits at most two busy assignments per HOME by default
+(`CODEX_CLAUDE_MAX_BUSY_WORKERS` may be only `1` or `2`), serializes active
+write-capable assignments by canonical root, and rejects a second live worker
+for the same current thread/root at launch. Idle PTYs consume no busy capacity;
+an active record for a dead named worker remains an orphaned root block until
+explicit terminal reconciliation.
 
 The boundary is control of another principal's session. Resume, assignment,
 successor lineage, rotation, and native-fallback retirement all require the
@@ -156,6 +158,11 @@ rotation boundary.
 
 The old UUID is then non-resumable and each registered successor attempt records
 its lineage without preventing a retry after a failed launch.
+One successful assignment owns exactly one bounded stage/outcome. After accepting
+its handoff, Codex sends `/exit`, proves named process-group death, then calls
+the matching rotate or retire script. Only that terminal lifecycle step releases
+the assignment. A resumed active assignment is recovery only: do not rerun
+`assign-worker.zsh` or resend its full prompt.
 Claude Code still owns compaction; the runtime counts completed `PostCompact`
 events without retaining their summaries.
 
@@ -180,6 +187,11 @@ material decision or authority. Return one terminal marker after the handoff
 and custody return:
 CODEX_HANDOFF_READY <TASK_ID> <ready_for_verification|blocked>
 ```
+
+The seven headings are verbatim and ordered; do not replace them with routing
+metadata. The persistent outer goal and completion authority remain with Codex.
+Each Claude worker owns one bounded stage/outcome, and its handoff is evidence,
+never goal completion.
 
 Before every poll or other `write_stdin`, including an empty poll, recheck the
 kill switch and confirm the registration

@@ -45,8 +45,11 @@ def main() -> int:
 
     manifest = json.loads(read(PLUGIN / ".codex-plugin/plugin.json"))
     require(manifest["name"] == PLUGIN.name, "plugin folder and manifest names differ")
-    require(re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"]) is not None, "strict semver required")
-    require(manifest["version"] == "0.3.1", "release version drift")
+    require(
+        re.fullmatch(r"\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?", manifest["version"]) is not None,
+        "strict semver required",
+    )
+    require(manifest["version"].startswith("0.3.1+codex."), "local cachebuster version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"
@@ -155,7 +158,15 @@ def main() -> int:
         require(heading in worker_prompt, f"worker prompt contract missing {heading}")
     require("choose the method" in worker_prompt.casefold(), "worker prompt does not grant method choice")
     require("launcher enforces their roles and models" in worker_prompt, "runtime routing boundary missing")
-    require(len(worker_prompt.split()) <= 240, "worker prompt is no longer lean")
+    require(len(worker_prompt.split()) <= 290, "worker prompt is no longer lean")
+    headings = ("Outcome", "Done when", "Boundaries", "Authoritative context", "Non-goals", "Known evidence", "Required handoff")
+    heading_contract = worker_prompt.split("The assignment body preserves these headings verbatim and in this order:", 1)[1]
+    positions = [heading_contract.index(heading) for heading in headings]
+    require(positions == sorted(positions), "assignment headings are not preserved in order")
+    require("persistent outer goal" in worker_prompt and "never goal completion" in worker_prompt, "outer-goal authority missing")
+    assignment_block = re.search(r"TASK_ID: <unique-id>\n\n(.*?)\n```", skill_text, flags=re.DOTALL)
+    require(assignment_block is not None, "SKILL assignment block missing")
+    require(re.findall(r"^(Outcome|Done when|Boundaries|Authoritative context|Non-goals|Known evidence|Required handoff):$", assignment_block.group(1), flags=re.MULTILINE) == list(headings), "SKILL assignment headings drifted")
 
     hook_text = read(SKILL / "scripts/worker-subagent-contract.zsh")
     router_text = read(SKILL / "scripts/worker-agent-router.zsh")
@@ -169,10 +180,11 @@ def main() -> int:
     require("subagent_type" in router_text, "router does not inspect the requested role")
 
     require(
-        "CODEX_CLAUDE_PARENT_MODEL:-claude-opus-5" in launcher,
-        "Claude Opus 5 parent default missing",
+        "CODEX_CLAUDE_PARENT_MODEL:-claude-sonnet-5" in launcher,
+        "Claude Sonnet 5 parent default missing",
     )
-    require('parent_effort="max"' in launcher, "maximum Claude parent effort missing")
+    require("CODEX_CLAUDE_PARENT_EFFORT:-high" in launcher, "high Claude parent effort default missing")
+    require("OPUS_PARENT_ROUTE_REQUIRED" in launcher and "parent_route_reason" in launcher, "auditable Opus routing missing")
     require("CODEX_CLAUDE_SUBAGENT_MODEL:-" not in launcher, "legacy global Claude model configuration remains")
     require("-u CLAUDE_CODE_SUBAGENT_MODEL" in launcher, "inherited global Claude model override is not cleared")
     require("-u CLAUDE_CODE_EFFORT_LEVEL" in launcher, "inherited global Claude effort override is not cleared")
@@ -228,11 +240,12 @@ def main() -> int:
         "cco_worker_live_reason" in retire and "cco_worker_live_reason" in rotate,
         "custody paths use different liveness proofs",
     )
-    for name, text in (("launcher", launcher), ("rotate", rotate), ("retire", retire)):
-        require(
-            "cco_scope_overlaps" not in text,
-            f"cwd/root exclusivity survives in {name}; concurrency must be ownership-only",
-        )
+    require("cco_thread_root_has_live_worker" in launcher, "same-thread/root live-worker launch gate missing")
+    require("CCO_ASSIGNMENT_ROOT" in runtime and "cco_terminalize_assignment" in runtime, "durable assignment state missing")
+    assign = read(SKILL / "scripts/assign-worker.zsh")
+    require("CODEX_CLAUDE_MAX_BUSY_WORKERS:-2" in assign and "CLAUDE_ASSIGN_CAPACITY_BUSY" in assign, "busy admission default missing")
+    require("CLAUDE_ASSIGN_DUPLICATE_ACTIVE" in assign and "CLAUDE_ASSIGN_ROOT_BUSY" in assign, "assignment conflict handling missing")
+    require("cco_terminalize_assignment" in rotate and "cco_terminalize_assignment" in retire, "lifecycle assignment release missing")
     require(
         "cco_scope_overlaps" not in runtime,
         "scope-overlap exclusivity helper survives in the runtime library",
@@ -250,7 +263,8 @@ def main() -> int:
         "cco_session_lease" in launcher and "cco_session_lease" in read(SKILL / "scripts/assign-worker.zsh"),
         "launch and assignment do not resolve the same session lease",
     )
-    require("cco_lease_has_durable_registration" in toggle, "toggle can act outside durable registrations")
+    require("cco_lease_has_status_registration" in toggle, "toggle can act outside durable registrations")
+    require("busy=$busy_count/2" in toggle and "orphaned=$orphaned_count" in toggle, "shared admission status is missing")
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")

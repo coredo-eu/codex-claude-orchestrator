@@ -20,12 +20,11 @@ source "$script_dir/runtime-lib.zsh"
 cco_init
 
 if [[ "$action" == "status" ]]; then
-  if [[ -e "$CCO_DISABLED_MARKER" ]]; then
-    print -- "Claude PTY agents: OFF"
-  else
-    print -- "Claude PTY agents: ON"
+  if [[ ! -e "$CCO_STATE_DIR" && ! -L "$CCO_STATE_DIR" ]]; then
+    print -- "Claude PTY agents: ON — busy=0/2 active=0 orphaned=0 blocked_roots=0 live_workers=0 legacy_stale_leases=0"
+    exit 0
   fi
-  exit 0
+  [[ -d "$CCO_STATE_DIR" && ! -L "$CCO_STATE_DIR" ]] || cco_die 70 "CLAUDE_STATUS_STATE_AMBIGUOUS"
 fi
 
 cco_acquire_gate || cco_die $? "CLAUDE_GATE_BUSY: $CCO_GATE_LOCK"
@@ -40,6 +39,58 @@ trap 'cleanup_gate' EXIT
 trap 'cleanup_gate; exit 129' HUP
 trap 'cleanup_gate; exit 130' INT
 trap 'cleanup_gate; exit 143' TERM
+
+if [[ "$action" == "status" ]]; then
+  assignment_records=("${(@f)$(cco_active_assignments)}") || cco_die 70 "CLAUDE_STATUS_ASSIGNMENT_STATE_AMBIGUOUS"
+  active_count=0; busy_count=0; orphaned_count=0
+  typeset -A active_roots
+  for assignment_record in "${assignment_records[@]}"; do
+    [[ -n "$assignment_record" ]] || continue
+    assignment_root=$("$CCO_JQ" -r '.root' "$assignment_record")
+    [[ -z "${active_roots[$assignment_root]:-}" ]] || cco_die 70 "CLAUDE_STATUS_DUPLICATE_ROOT_ASSIGNMENT"
+    active_roots[$assignment_root]=1; (( active_count += 1 ))
+    assignment_live_status=0
+    cco_assignment_worker_live "$assignment_record" || assignment_live_status=$?
+    if (( assignment_live_status == 0 )); then
+      (( busy_count += 1 ))
+    elif (( assignment_live_status == 1 )); then
+      (( orphaned_count += 1 ))
+    else
+      cco_die 70 "CLAUDE_STATUS_LIVENESS_UNPROVEN"
+    fi
+  done
+  live_count=0; legacy_stale_count=0
+  typeset -A status_process_starts status_process_groups
+  while read -r status_pid status_group status_dow status_mon status_day status_clock status_year; do
+    [[ "$status_pid" == <-> && "$status_group" == <-> ]] || continue
+    status_process_starts[$status_pid]="$status_dow $status_mon $status_day $status_clock $status_year"
+    status_process_groups[$status_pid]="$status_group"
+  done < <(ps -axo pid=,pgid=,lstart= 2>/dev/null || true)
+  status_process_args=$(ps -axo args= 2>/dev/null || true)
+  if [[ -e "$CCO_LEASE_ROOT" || -L "$CCO_LEASE_ROOT" ]]; then
+    [[ -d "$CCO_LEASE_ROOT" && ! -L "$CCO_LEASE_ROOT" ]] || cco_die 70 "CLAUDE_STATUS_LEASE_STATE_AMBIGUOUS"
+    for lease in "$CCO_LEASE_ROOT"/*(DN); do
+      [[ -d "$lease" && ! -L "$lease" ]] || cco_die 70 "CLAUDE_STATUS_LEASE_STATE_AMBIGUOUS"
+      if ! cco_lease_has_status_registration "$lease"; then
+        legacy_owner_pid=""; [[ ! -r "$lease/owner_pid" ]] || legacy_owner_pid=$(<"$lease/owner_pid")
+        observed_legacy_start=""; [[ "$legacy_owner_pid" != <-> ]] || observed_legacy_start="${status_process_starts[$legacy_owner_pid]:-}"
+        cco_legacy_lease_is_stale "$lease" "$observed_legacy_start" "$status_process_args" && { (( legacy_stale_count += 1 )); continue; }
+        cco_die 70 "CLAUDE_STATUS_LEASE_STATE_AMBIGUOUS"
+      fi
+      lease_owner_pid=""; lease_owner_start=""; lease_owner_group=""
+      [[ ! -r "$lease/owner_pid" ]] || lease_owner_pid=$(<"$lease/owner_pid")
+      [[ ! -r "$lease/process_start" ]] || lease_owner_start=$(<"$lease/process_start")
+      [[ ! -r "$lease/process_group" ]] || lease_owner_group=$(<"$lease/process_group")
+      normalized_lease_start="${(j: :)${(z)lease_owner_start}}"
+      if [[ "$lease_owner_pid" == <-> && "$lease_owner_group" == <-> && "${status_process_starts[$lease_owner_pid]:-}" == "$normalized_lease_start" && "${status_process_groups[$lease_owner_pid]:-}" == "$lease_owner_group" ]]; then
+        cco_lease_is_live "$lease" && (( live_count += 1 )) || true
+      fi
+    done
+  fi
+  state="ON"; [[ ! -e "$CCO_DISABLED_MARKER" ]] || state="OFF"
+  print -- "Claude PTY agents: $state — busy=$busy_count/2 active=$active_count orphaned=$orphaned_count blocked_roots=${#active_roots} live_workers=$live_count legacy_stale_leases=$legacy_stale_count"
+  exit 0
+fi
 
 if [[ "$action" == "on" ]]; then
   /bin/rm -f -- "$CCO_DISABLED_MARKER"

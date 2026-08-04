@@ -10,7 +10,7 @@
 
 > [!IMPORTANT]
 > **Branch variant — `main` (MCP-free).** This long-lived variant provides the
-> persistent Opus parent, role-routed Haiku/Sonnet/Opus/Fable workers, and
+> bounded Sonnet/high parent stages, role-routed Haiku/Sonnet/Opus/Fable workers, and
 > GPT-5.6 native fallback without enabling any MCP server for Claude workers.
 > Choose it for the smallest runtime and configuration surface with direct
 > source inspection. For guarded discovery through
@@ -33,8 +33,8 @@ daemon, and no claim to be an operating-system sandbox.
 
 - **Codex remains in charge.** It decides whether delegation is worthwhile and
   independently verifies the result. Claude is not forced onto every action.
-- **Claude keeps context.** One PTY-backed Opus parent can survive across related
-  tasks instead of rebuilding repository and outcome context every time.
+- **Claude keeps bounded context.** One PTY-backed Sonnet parent retains context
+  only for its assigned stage; the outer goal and completion authority stay with Codex.
 - **Each model gets the work it fits.** Haiku searches and triages, Sonnet
   implements and debugs, Opus reviews and synthesizes, and Fable is reserved for
   exceptional long-horizon work.
@@ -51,11 +51,11 @@ daemon, and no claim to be an operating-system sandbox.
 flowchart TD
     U[User outcome and exact authority] --> C[Codex orchestrator]
     C -->|small or orchestrator-owned work| D[Codex works directly]
-    C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: Claude Opus 5]
+    C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: Claude Sonnet 5 / high]
     O -->|search / logs / first triage| H[Haiku roles]
     O -->|implementation / debugging| S[Sonnet roles]
     O -->|review / security| P[Opus roles]
-    O -->|exceptional long horizon| F[Fable role<br/>Opus parent fallback]
+    O -->|exceptional long horizon| F[Fable role<br/>current-parent fallback]
     H -->|distilled evidence| O
     S -->|bounded result| O
     P -->|independent findings| O
@@ -73,7 +73,7 @@ flowchart TD
 - **Better allocation of expensive reasoning.** Strong models spend more time
   on intent, synthesis, difficult implementation, and review instead of routine
   file search or log classification.
-- **Less repeated setup.** The Opus parent retains repository and task context,
+- **Less repeated setup.** The bounded parent retains repository and task context,
   so related follow-ups do not each pay the full cold-start cost.
 - **Higher throughput when work separates cleanly.** Independent discovery,
   triage, implementation, and review packages can use different contexts and
@@ -134,20 +134,20 @@ source in both CLIs before relying on included plan usage.
    would dominate, and chooses Claude only when persistence, specialization, or
    parallelism should improve total cost or elapsed time without weakening the
    result.
-3. **Codex creates a bounded contract.** The handoff states the outcome, an
-   observable `Done when`, boundaries, authoritative context, non-goals, and the
-   evidence required back.
-4. **The plugin launches or reuses a worker.** Its registration is bound to the
-   current Codex thread and canonical repository root, and its lease is keyed by
-   its own session UUID. Codex may run any number of its own workers, including
-   several in one root; the lease prevents only a second holder of that same
-   session.
-5. **The Opus parent owns execution.** It receives the task body through the PTY,
+3. **Codex creates a bounded contract.** The handoff states the seven ordered
+   headings: outcome, observable `Done when`, boundaries, authoritative context,
+   non-goals, known evidence, and required handoff.
+4. **The plugin launches one bounded stage worker.** A second live worker in the
+   same current thread/root is refused; active write assignments serialize by
+   canonical root and the HOME-wide busy limit defaults to two.
+5. **The Sonnet parent owns execution.** It receives the task body through the PTY,
    never as a process argument, and chooses its own method.
 6. **Claude routes supporting packages.** Search and triage go to Haiku,
    implementation and debugging to Sonnet, difficult review to Opus, and only
    exceptional long-horizon work to Fable.
-7. **The worker returns a compact handoff.** It reports changed artifacts,
+7. **The worker returns a compact handoff, then exits.** Codex proves the named
+   process group dead and calls matching rotate or retire, which terminalizes the
+   assignment. It reports changed artifacts,
    decisive evidence, remaining uncertainty, deliberate non-actions, and edit
    custody.
 8. **Codex independently verifies.** The orchestrator decides whether the real
@@ -174,7 +174,7 @@ selects the worker.
 | Actor | Model | Effort | Responsibility |
 | --- | --- | --- | --- |
 | Codex orchestrator | Main session model; never pinned by this plugin | Main session setting | Intent, architecture, executor choice, authority, independent verification, final verdict |
-| Claude parent | `claude-opus-5` | `max` | Persistent execution context, decomposition, routing, synthesis, worker handoff |
+| Claude parent | `claude-sonnet-5` by default; explicit routed Opus override | `high` by default | Bounded execution context, decomposition, routing, synthesis, worker handoff |
 
 ### Claude execution roles
 
@@ -205,12 +205,12 @@ Suppose the user asks Codex to fix an intermittent authorization regression:
 
 1. Codex determines that the task is bounded but benefits from persistent
    execution context, then transfers one explicit edit scope to Claude.
-2. The Opus parent asks `explorer` on Haiku to map the relevant code and
+2. The Sonnet parent asks `explorer` on Haiku to map the relevant code and
    `test-triager` on Haiku to classify the failure evidence.
 3. `debugger` on Sonnet establishes the likely cause without editing source.
 4. `implementer` on Sonnet receives sole edit custody and makes the bounded
    change.
-5. The Opus parent may route a focused regression review to `reviewer`, or a
+5. The parent may route a focused regression review to `reviewer`, or a
    security-sensitive boundary to `security-reviewer`.
 6. Claude returns evidence and custody. Codex inspects the real diff and tests,
    resolves any material uncertainty, and gives the user the final verdict.
@@ -328,19 +328,23 @@ change. Keep Codex as the authority owner and independently verify Claude's
 handoff.
 ```
 
-Codex should provide a compact contract with `Outcome`, observable `Done when`,
-`Boundaries`, `Authoritative context`, `Non-goals`, and `Required handoff`. The
-skill handles launch/reuse, task transport, terminal handoff, and safe fallback.
+Codex should provide a compact seven-heading contract: `Outcome`, observable
+`Done when`, `Boundaries`, `Authoritative context`, `Non-goals`, `Known evidence`,
+and `Required handoff`. The persistent outer goal and completion authority stay
+with Codex; the skill handles one-stage launch, task transport, terminal handoff,
+and safe fallback.
 
 Parent default and non-secret override:
 
 ```zsh
 # Defaults shown explicitly; export only when changing them.
-export CODEX_CLAUDE_PARENT_MODEL=claude-opus-5
+export CODEX_CLAUDE_PARENT_MODEL=claude-sonnet-5
+export CODEX_CLAUDE_PARENT_EFFORT=high
 ```
 
-The parent model is passed with `claude --model`, and its effort is pinned to
-`max` for newly registered workers. The role roster is passed with
+The parent model is passed with `claude --model`, and its effort defaults to
+`high` for newly registered workers. An Opus parent requires explicit route
+class and reason metadata. The role roster is passed with
 `--agents` from a private runtime snapshot. A `PreToolUse` hook rejects unlisted
 roles and mismatched per-invocation model overrides. The launcher also clears
 inherited `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and legacy
@@ -350,8 +354,8 @@ delegation layer.
 
 ### Claude routing details
 
-Claude Code inherits the Opus parent when Fable is outside the account's
-allowed model set. If Fable fails for another availability reason, the parent
+Claude Code inherits the current parent model when Fable is outside the
+account's allowed model set. If Fable fails for another availability reason, the parent
 retains the outcome instead of silently routing it to a cheaper role. The
 roster deliberately denies built-in Explore, Plan, general-purpose,
 statusline-setup, and claude-code-guide agents. A runtime hook rejects unlisted

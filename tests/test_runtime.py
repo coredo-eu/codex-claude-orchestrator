@@ -72,7 +72,9 @@ def read_pty(process: subprocess.Popen[bytes], master: int, *, needle: str | Non
             chunks.append(chunk)
             text = b"".join(chunks).decode("utf-8", errors="replace")
             if needle and needle in text:
-                return text
+                marker_offset = text.index(needle)
+                if "\n" in text[marker_offset:] or "\r" in text[marker_offset:]:
+                    return text
         if process.poll() is not None and not ready:
             break
     return b"".join(chunks).decode("utf-8", errors="replace")
@@ -364,8 +366,8 @@ def main() -> int:
         require(observed["disable_auto_memory"] == "1", "auto-memory was not disabled")
         require(observed["disable_explore_plan"] == "1", "built-in Explore/Plan agents were not disabled")
         require(observed["disable_git_instructions"] == "1", "automatic Git instructions were not disabled")
-        require(option_value(argv, "--model") == "claude-opus-5", "parent model is not Claude Opus 5")
-        require(option_value(argv, "--effort") == "max", "parent effort is not max")
+        require(option_value(argv, "--model") == "claude-sonnet-5", "parent model is not Claude Sonnet 5")
+        require(option_value(argv, "--effort") == "high", "parent effort is not high")
         agents = json.loads(option_value(argv, "--agents"))
         require(
             {name: definition["model"] for name, definition in agents.items()} == expected_agent_models,
@@ -460,10 +462,20 @@ def main() -> int:
         )
         require(not (home / ".claude").exists(), "launcher created or modified standalone Claude config")
 
-        # Ownership, not scope, is the launcher boundary. Codex may run any
-        # number of its own workers in one canonical root, each holding its own
-        # session-keyed lease.
+        # A second live worker for the same thread/root is refused at launch.
+        same_thread_env = env.copy()
+        same_thread_env["FAKE_CLAUDE_RECORD"] = str(base / "same-thread record.json")
+        same_thread_env.pop("FAKE_CLAUDE_CHILD_PID")
+        same_thread, same_thread_master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=same_thread_env)
+        same_thread_output = read_pty(same_thread, same_thread_master)
+        same_thread.wait(timeout=5)
+        os.close(same_thread_master)
+        require(same_thread.returncode == 75 and "CLAUDE_LAUNCH_THREAD_ROOT_LIVE" in same_thread_output, "same-thread/root launch was admitted")
+
+        # A different thread may launch an idle worker; write serialization is
+        # established only by the assignment record.
         sibling_env = env.copy()
+        sibling_env["CODEX_THREAD_ID"] = "sibling-thread"
         sibling_env["FAKE_CLAUDE_RECORD"] = str(base / "sibling record.json")
         sibling_env.pop("FAKE_CLAUDE_CHILD_PID")
         sibling, sibling_master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=sibling_env)
@@ -490,6 +502,117 @@ def main() -> int:
             process_is_live(worker.pid) and process_is_live(sibling.pid),
             "two same-root workers are not simultaneously live",
         )
+
+        # Busy admission is HOME-scoped, not profile-scoped: independent
+        # CODEX_HOME values still share the two-worker ceiling.
+        admission_roots = [base / f"admission root {index}" for index in range(1, 4)]
+        for admission_root in admission_roots:
+            admission_root.mkdir()
+        admission_workers: list[tuple[subprocess.Popen[bytes], int, dict[str, object], dict[str, str]]] = []
+        for index, admission_root in enumerate(admission_roots):
+            admission_env = env.copy()
+            admission_env.update({
+                "CODEX_THREAD_ID": f"admission-thread-{index}",
+                "CODEX_HOME": str(base / f"profile-{index}"),
+                "FAKE_CLAUDE_RECORD": str(base / f"admission-{index}.json"),
+            })
+            admission_env.pop("FAKE_CLAUDE_CHILD_PID", None)
+            admission_worker, admission_master = start_pty([zsh, str(LAUNCHER), str(admission_root)], cwd=admission_root, env=admission_env)
+            admission_output = read_pty(admission_worker, admission_master, needle="CODEX_PTY_WORKER_READY")
+            admission_ready = json.loads(next(line for line in admission_output.splitlines() if "CODEX_PTY_WORKER_READY " in line).split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
+            admission_workers.append((admission_worker, admission_master, admission_ready, admission_env))
+        first_admission = run_assign(zsh, admission_roots[0], str(admission_workers[0][2]["uuid"]), "stage-one", admission_workers[0][3])
+        second_admission = run_assign(zsh, admission_roots[1], str(admission_workers[1][2]["uuid"]), "stage-two", admission_workers[1][3])
+        duplicate_admission = run_assign(zsh, admission_roots[0], str(admission_workers[0][2]["uuid"]), "stage-one", admission_workers[0][3])
+        invalid_max_env = admission_workers[2][3].copy()
+        invalid_max_env["CODEX_CLAUDE_MAX_BUSY_WORKERS"] = "3"
+        invalid_max = run_assign(
+            zsh,
+            admission_roots[2],
+            str(admission_workers[2][2]["uuid"]),
+            "stage-three",
+            invalid_max_env,
+        )
+
+        third_admission = run_assign(zsh, admission_roots[2], str(admission_workers[2][2]["uuid"]), "stage-three", admission_workers[2][3])
+        require(first_admission.returncode == 0 and second_admission.returncode == 0, "two cross-profile busy assignments were not admitted")
+        require(duplicate_admission.returncode == 79 and "CLAUDE_ASSIGN_DUPLICATE_ACTIVE" in duplicate_admission.stderr, "duplicate assignment could resend a prompt")
+        require(invalid_max.returncode == 64 and "INVALID_MAX_BUSY_WORKERS" in invalid_max.stderr, "a process raised the shared busy ceiling above two")
+        require(third_admission.returncode == 77 and "CLAUDE_ASSIGN_CAPACITY_BUSY" in third_admission.stderr, "third cross-profile busy assignment was admitted")
+        busy_status = subprocess.run(
+            [zsh, str(TOGGLE), "status"], env=env, text=True, capture_output=True, check=False
+        )
+        require(
+            busy_status.returncode == 0
+            and "busy=2/2" in busy_status.stdout
+            and "active=2" in busy_status.stdout
+            and "orphaned=0" in busy_status.stdout
+            and "blocked_roots=2" in busy_status.stdout,
+            f"shared busy status drift: {busy_status}",
+        )
+
+        admission_workers[0][0].terminate()
+        admission_workers[0][0].wait(timeout=5)
+        os.close(admission_workers[0][1])
+
+        # Liveness is tri-state. Once the worker is dead, a malformed
+        # registration is neither live nor proven dead, so admission and status
+        # must fail closed instead of freeing capacity or reporting an orphan.
+        first_registration = home / ".codex/claude-pty-sessions" / str(admission_workers[0][2]["uuid"])
+        first_name = first_registration / "name"
+        hidden_first_name = first_registration / ".hidden-name"
+        first_name.rename(hidden_first_name)
+        try:
+            unproven_admission = run_assign(
+                zsh,
+                admission_roots[2],
+                str(admission_workers[2][2]["uuid"]),
+                "stage-three",
+                admission_workers[2][3],
+            )
+            unproven_status = subprocess.run(
+                [zsh, str(TOGGLE), "status"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            hidden_first_name.rename(first_name)
+        require(
+            unproven_admission.returncode == 70
+            and "CLAUDE_ASSIGN_LIVENESS_UNPROVEN" in unproven_admission.stderr,
+            f"unproven liveness freed assignment capacity: {unproven_admission}",
+        )
+        require(
+            unproven_status.returncode == 70
+            and "CLAUDE_STATUS_LIVENESS_UNPROVEN" in unproven_status.stderr,
+            f"status classified unproven liveness as live or orphaned: {unproven_status}",
+        )
+
+        after_orphan = run_assign(
+            zsh,
+            admission_roots[2],
+            str(admission_workers[2][2]["uuid"]),
+            "stage-three",
+            admission_workers[2][3],
+        )
+        require(after_orphan.returncode == 0, "dead active record still consumed busy capacity")
+        orphan_status = subprocess.run(
+            [zsh, str(TOGGLE), "status"], env=env, text=True, capture_output=True, check=False
+        )
+        require(
+            orphan_status.returncode == 0
+            and "busy=2/2" in orphan_status.stdout
+            and "active=3" in orphan_status.stdout
+            and "orphaned=1" in orphan_status.stdout
+            and "blocked_roots=3" in orphan_status.stdout,
+            f"orphan status drift: {orphan_status}",
+        )
+        for admission_worker, admission_master, _, _ in admission_workers[1:]:
+            admission_worker.terminate()
+            admission_worker.wait(timeout=5)
+            os.close(admission_master)
 
         # A foreign Codex thread may never steer a session it does not own.
         foreign_env = env.copy()
@@ -588,6 +711,7 @@ def main() -> int:
         )
         try:
             beside_env = env.copy()
+            beside_env["CODEX_THREAD_ID"] = "beside-thread"
             beside_env["FAKE_CLAUDE_RECORD"] = str(base / "beside record.json")
             beside_env.pop("FAKE_CLAUDE_CHILD_PID")
             beside, beside_master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=beside_env)
@@ -607,7 +731,7 @@ def main() -> int:
 
         # The gate is driven only by completed compactions. It stores one
         # content-free line per event and one acknowledged generation.
-        first_assignment = run_assign(zsh, repo, worker_uuid, "first-task", env)
+        first_assignment = run_assign(zsh, repo, worker_uuid, "runtime-test", env)
         require(first_assignment.returncode == 0, f"fresh assignment was refused: {first_assignment}")
 
         summary_sentinel = "SUMMARY-SENTINEL-MUST-NOT-PERSIST"
@@ -644,25 +768,13 @@ def main() -> int:
 
         gated = run_assign(zsh, repo, worker_uuid, "post-compact-task", env)
         require(
-            gated.returncode == 76 and "CLAUDE_ASSIGN_DECISION_REQUIRED" in gated.stderr,
-            f"compaction threshold did not close the normal path: {gated}",
-        )
-        decision = marker_payload(gated, "CODEX_PTY_WORKER_DECISION")
-        require(decision["compactions"] == 2 and decision["threshold"] == 2, f"gate marker drift: {decision}")
-
-        continued = run_assign(
-            zsh, repo, worker_uuid, "post-compact-task", env, continue_context=True
-        )
-        require(continued.returncode == 0, f"context continuation was refused: {continued}")
-        continued_payload = marker_payload(continued, "CODEX_PTY_WORKER_ASSIGN")
-        require(
-            continued_payload["continuation_scope"] == "until_next_compaction",
-            f"continuation scope drift: {continued_payload}",
+            gated.returncode == 77 and "CLAUDE_ASSIGN_SESSION_BUSY" in gated.stderr,
+            f"active stage accepted a second task: {gated}",
         )
         same_generation = run_assign(zsh, repo, worker_uuid, "related-task", env)
         require(
-            same_generation.returncode == 0,
-            f"acknowledged generation required per-assignment ceremony: {same_generation}",
+            same_generation.returncode == 77 and "CLAUDE_ASSIGN_SESSION_BUSY" in same_generation.stderr,
+            f"active stage accepted another task: {same_generation}",
         )
 
         subprocess.run(
@@ -673,15 +785,15 @@ def main() -> int:
             check=True,
         )
         next_generation = run_assign(zsh, repo, worker_uuid, "next-generation", env)
-        require(next_generation.returncode == 76, "a new compaction did not reopen the decision gate")
+        require(next_generation.returncode == 77 and "CLAUDE_ASSIGN_SESSION_BUSY" in next_generation.stderr, "active stage accepted another task")
 
         acknowledged_path = context_dir / "acknowledged_compactions"
         acknowledged_value = acknowledged_path.read_text(encoding="utf-8")
         acknowledged_path.write_text("corrupt\n", encoding="utf-8")
         corrupt_state = run_assign(zsh, repo, worker_uuid, "corrupt-state", env)
         require(
-            corrupt_state.returncode == 70 and "CLAUDE_ASSIGN_CONTEXT_CORRUPT" in corrupt_state.stderr,
-            "corrupt lifecycle state reset fail-open",
+            corrupt_state.returncode == 77 and "CLAUDE_ASSIGN_SESSION_BUSY" in corrupt_state.stderr,
+            "active stage accepted another task after corrupt context",
         )
         acknowledged_path.write_text(acknowledged_value, encoding="utf-8")
 
@@ -699,8 +811,8 @@ def main() -> int:
         require(failed_observer.returncode == 0 and len(pending) == 1, "observer append failure was not durable")
         lost_event = run_assign(zsh, repo, worker_uuid, "lost-event", env)
         require(
-            lost_event.returncode == 70 and "CLAUDE_ASSIGN_CONTEXT_CORRUPT" in lost_event.stderr,
-            "lost compaction remained fail-open",
+            lost_event.returncode == 77 and "CLAUDE_ASSIGN_SESSION_BUSY" in lost_event.stderr,
+            "active stage accepted another task after a lost compaction",
         )
         pending[0].rmdir()
 
@@ -849,10 +961,10 @@ def main() -> int:
         resumed_argv = resumed_observed["argv"]
         require(option_value(resumed_argv, "--resume") == worker_uuid, "Claude resume argument drift")
         require(
-            option_value(resumed_argv, "--model") == "claude-opus-5",
+            option_value(resumed_argv, "--model") == "claude-sonnet-5",
             "resume ignored pinned parent model",
         )
-        require(option_value(resumed_argv, "--effort") == "max", "resume ignored pinned parent effort")
+        require(option_value(resumed_argv, "--effort") == "high", "resume ignored pinned parent effort")
         require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
         require(resumed_observed["effort_level"] is None, "resume inherited a global effort override")
         require(

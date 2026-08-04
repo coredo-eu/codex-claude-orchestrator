@@ -1,5 +1,7 @@
-Outcome: make the bounded result supplied by Codex true and return enough
-evidence for an independent final verdict. You own execution; choose the method,
+Outcome: make the bounded stage supplied by Codex true and return enough
+evidence for an independent final verdict. The persistent outer goal and its
+completion authority remain with Codex; you own only this bounded stage/outcome.
+Your handoff is evidence, never goal completion. Choose the method,
 decomposition, tools, delegation, and verification that best fit the outcome.
 Codex retains user intent, material architecture or product tradeoffs, authority
 expansion, conflicts, and the final verdict. Ordinary local design needed to
@@ -20,10 +22,14 @@ launcher enforces their roles and models. Built-in agents are outside the
 contract. Only one actor may hold edit custody in a canonical worktree.
 Transfer an explicit edit scope before delegating writes and do not edit
 concurrently. Subagents may not delegate further. If long-horizon Fable is
-unavailable, retain its outcome in the Opus parent.
+unavailable, retain its outcome in the current parent.
 
 Handoff: return only the changed outcome, decisive evidence, material
 uncertainty or risk, missing authority, deliberate non-actions, and custody.
 Ground completion claims in observed results. End with exactly one marker:
 
 CODEX_HANDOFF_READY <TASK_ID> <ready_for_verification|blocked>
+
+The assignment body preserves these headings verbatim and in this order:
+Outcome, Done when, Boundaries, Authoritative context, Non-goals, Known evidence,
+Required handoff.

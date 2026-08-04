@@ -29,6 +29,8 @@ path_hash=$(cco_hash "$root")
 thread_hash=$(cco_hash "$codex_thread_id")
 registration="$CCO_SESSION_ROOT/$session_uuid"
 threshold="$CCO_CONTEXT_COMPACTION_THRESHOLD"
+max_busy=${CODEX_CLAUDE_MAX_BUSY_WORKERS:-2}
+[[ "$max_busy" == <-> && "$max_busy" -ge 1 && "$max_busy" -le 2 ]] || cco_die 64 "INVALID_MAX_BUSY_WORKERS"
 
 [[ ! -e "$CCO_DISABLED_MARKER" ]] || cco_die 78 "CLAUDE_AGENTS_DISABLED: $CCO_DISABLED_MARKER"
 cco_acquire_gate || cco_die $? "CLAUDE_GATE_BUSY: $CCO_GATE_LOCK"
@@ -63,6 +65,32 @@ lease=$(cco_session_lease "$session_uuid" "$path_hash") || \
   cco_die 75 "CLAUDE_ASSIGN_WORKER_NOT_LIVE: uuid=$session_uuid root=$root"
 cco_lease_is_live "$lease" || \
   cco_die 75 "CLAUDE_ASSIGN_WORKER_NOT_LIVE: uuid=$session_uuid root=$root"
+
+# Busy capacity counts only live assigned workers. A dead active record is an
+# orphan: it blocks its root but must be terminalized explicitly and never
+# consumes a shared busy slot.
+cco_assignment_root_ready || cco_die 70 "CLAUDE_ASSIGNMENT_STATE_AMBIGUOUS"
+assignment_records=("${(@f)$(cco_active_assignments)}") || cco_die 70 "CLAUDE_ASSIGNMENT_STATE_AMBIGUOUS"
+busy_count=0
+for assignment_record in "${assignment_records[@]}"; do
+  [[ -n "$assignment_record" ]] || continue
+  assignment_root=$("$CCO_JQ" -r '.root' "$assignment_record")
+  assignment_uuid=$("$CCO_JQ" -r '.session_uuid' "$assignment_record")
+  assignment_task=$("$CCO_JQ" -r '.task_id' "$assignment_record")
+  if [[ "$assignment_uuid" == "$session_uuid" ]]; then
+    [[ "$assignment_task" == "$task_id" ]] && cco_die 79 "CLAUDE_ASSIGN_DUPLICATE_ACTIVE: uuid=$session_uuid task_id=$task_id"
+    cco_die 77 "CLAUDE_ASSIGN_SESSION_BUSY: uuid=$session_uuid task_id=$assignment_task"
+  fi
+  [[ "$assignment_root" != "$root" ]] || cco_die 77 "CLAUDE_ASSIGN_ROOT_BUSY: root=$root uuid=$assignment_uuid task_id=$assignment_task"
+  assignment_live_status=0
+  cco_assignment_worker_live "$assignment_record" || assignment_live_status=$?
+  if (( assignment_live_status == 0 )); then
+    (( busy_count += 1 ))
+  elif (( assignment_live_status != 1 )); then
+    cco_die 70 "CLAUDE_ASSIGN_LIVENESS_UNPROVEN: uuid=$assignment_uuid root=$assignment_root"
+  fi
+done
+(( busy_count < max_busy )) || cco_die 77 "CLAUDE_ASSIGN_CAPACITY_BUSY: busy=$busy_count max=$max_busy"
 
 events=0
 acknowledged=0
@@ -125,4 +153,12 @@ assign_json=$("$CCO_JQ" -cn \
   --argjson compactions "$events" --argjson threshold "$threshold" \
   '{uuid:$uuid,root:$root,task_id:$task_id,context_state:$context_state,
     continuation_scope:$continuation_scope,compactions:$compactions,threshold:$threshold}')
+assignment_record="$CCO_ASSIGNMENT_ROOT/$session_uuid.json"
+[[ ! -e "$assignment_record" && ! -L "$assignment_record" ]] || cco_die 77 "CLAUDE_ASSIGN_RECORD_EXISTS: uuid=$session_uuid"
+assignment_tmp=$(mktemp "$CCO_ASSIGNMENT_ROOT/.assignment.XXXXXX") || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
+"$CCO_JQ" -cn \
+  --arg uuid "$session_uuid" --arg root "$root" --arg task_id "$task_id" --arg thread_hash "$thread_hash" \
+  --arg assigned_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  '{version:1,state:"active",access:"write",session_uuid:$uuid,root:$root,task_id:$task_id,thread_hash:$thread_hash,assigned_at:$assigned_at}' > "$assignment_tmp" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
+/bin/chmod 600 "$assignment_tmp" && /bin/mv -- "$assignment_tmp" "$assignment_record" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
 print -r -- "CODEX_PTY_WORKER_ASSIGN $assign_json"

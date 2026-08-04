@@ -40,23 +40,27 @@ Codex-owned Claude worker provided by
 when orchestrator judgment is material or delegation overhead, risk, or
 unavailability removes that value.
 
-Launch as many Codex-owned Claude workers as the work needs, including several
-in one canonical worktree; the launcher sets no limit. It enforces session
-ownership, not exclusivity, so when several workers share a worktree you must
-give each a non-overlapping edit scope. A Codex-owned Claude worker
+The launcher admits at most two busy Claude assignments per HOME by default
+(`CODEX_CLAUDE_MAX_BUSY_WORKERS` may be only `1` or `2`), and an active
+write assignment serializes a canonical root. Admission occurs at assignment:
+idle PTYs consume no busy capacity. A new launch also refuses a second live
+worker in the same current Codex thread/root. It never adopts a foreign-thread
+or standalone Claude session. A Codex-owned Claude worker
 is permanently local-only and may not commit, push, publish, release, deploy,
 control services, send external messages, administer the host, operate on
 credentials, or perform destructive remediation. Each such action requires
 separate, exact current-user authorization and Codex review.
 
 Treat `$HOME/.codex/claude-pty-agents.disabled` as the sole worker ON/OFF state.
-Never launch, resume, assign, or poll a worker while it exists. Reuse only a
-session whose UUID, canonical root, and registration were created by this exact
+Never launch, resume, assign, or poll a worker while it exists. Resume only the
+same bounded outcome for a session whose UUID, canonical root, and registration were created by this exact
 Codex thread; its lease is keyed by that UUID. Never resume, assign, rotate,
 retire, or otherwise control a session belonging to another Codex thread, or a
 user-launched standalone Claude session.
 
-Fallback transfers ownership; it never duplicates execution. Claude failure
+Each successful assignment owns one bounded stage. After a verified handoff,
+Codex sends `/exit`, proves the named process group dead, and terminalizes that
+same task through rotate or retire; no next-task reuse is permitted. Fallback transfers ownership; it never duplicates execution. Claude failure
 changes the executor, not the outcome or authority. Before a
 native fallback writes, prove the exact Claude worker is dead, return edit
 custody, and retire its registered assignment with the bundled retirement

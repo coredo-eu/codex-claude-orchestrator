@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-orchestrator",
-  "version": "0.3.2+codex.20260724210313",
+  "version": "0.3.2+codex.20260804111910",
   "description": "Let Codex orchestrate persistent Claude Code workers and role-routed GPT/Claude specialists for fast, verified local development.",
   "author": {
     "name": "Nikita Veremeev",
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Codex Claude Orchestrator",
     "shortDescription": "Codex + Claude, role-routed locally",
-    "longDescription": "Keeps Codex in charge of intent and verification while a persistent Opus 5 parent routes discovery, implementation, debugging, review, and security work to Haiku 4.5, Sonnet 5, Opus 5, or Fable 5, with GPT-5.6 native fallback roles.",
+    "longDescription": "Keeps Codex in charge of intent and verification while a persistent Sonnet 5 parent routes discovery, implementation, debugging, review, and security work to Haiku 4.5, Sonnet 5, Opus 5, or Fable 5, with GPT-5.6 native fallback roles.",
     "developerName": "Nikita Veremeev",
     "category": "Developer Tools",
     "websiteURL": "https://github.com/coredo-eu/codex-claude-orchestrator",

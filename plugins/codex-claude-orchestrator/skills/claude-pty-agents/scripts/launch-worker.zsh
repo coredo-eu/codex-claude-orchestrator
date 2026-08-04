@@ -68,8 +68,10 @@ worker_group=$(cco_process_group $$)
 [[ "$worker_group" == <-> && "$worker_group" -gt 1 && "$worker_group" == "$$" ]] || \
   cco_die 69 "PTY_PROCESS_GROUP_ISOLATION_REQUIRED: pid=$$ pgid=${worker_group:-unknown}; invoke the launcher as the PTY command or with exec"
 
-parent_model=${CODEX_CLAUDE_PARENT_MODEL:-claude-opus-5}
-parent_effort="max"
+parent_model=${CODEX_CLAUDE_PARENT_MODEL:-claude-sonnet-5}
+parent_effort=${CODEX_CLAUDE_PARENT_EFFORT:-high}
+parent_route_class=${CODEX_CLAUDE_PARENT_ROUTE_CLASS:-ordinary}
+parent_route_reason=${CODEX_CLAUDE_PARENT_ROUTE_REASON:-bounded_local_outcome}
 runtime_schema="4"
 legacy_subagent_model=""
 
@@ -89,10 +91,10 @@ safe_base=$(print -rn -- "$base" | LC_ALL=C tr -cs 'A-Za-z0-9' '-' | sed 's/^-*/
 safe_base=${safe_base[1,28]}
 worker_name="codex-pty-${safe_base}-${path_hash[1,8]}-${session_uuid[1,8]}"
 registration="$CCO_SESSION_ROOT/$session_uuid"
-# Ownership, not exclusivity: the lease is keyed by this session's own UUID, so
-# any number of Codex-owned workers may run in the same canonical root. No
-# standalone or foreign Claude process is ever discovered, inspected, or
-# treated as a launch conflict.
+# The lease is keyed by this session UUID. Launch admission rejects another live
+# worker owned by this thread/root, while assignment admission serializes active
+# write custody by canonical root. Standalone or foreign Claude processes are
+# never discovered, inspected, or treated as launch candidates.
 lease="$CCO_LEASE_ROOT/$session_uuid"
 
 context_threshold="$CCO_CONTEXT_COMPACTION_THRESHOLD"
@@ -110,7 +112,19 @@ trap 'cleanup_gate; exit 130' INT
 trap 'cleanup_gate; exit 143' TERM
 
 [[ ! -e "$CCO_DISABLED_MARKER" ]] || cco_die 78 "CLAUDE_AGENTS_DISABLED: $CCO_DISABLED_MARKER"
-/bin/mkdir -p -- "$CCO_LEASE_ROOT" "$CCO_SESSION_ROOT"
+/bin/mkdir -p -- "$CCO_LEASE_ROOT"
+if [[ -e "$CCO_SESSION_ROOT" || -L "$CCO_SESSION_ROOT" ]]; then
+  [[ -d "$CCO_SESSION_ROOT" && ! -L "$CCO_SESSION_ROOT" ]] || cco_die 70 "CLAUDE_LAUNCH_REGISTRATION_AMBIGUOUS: root=$root"
+else
+  /bin/mkdir -- "$CCO_SESSION_ROOT" || cco_die 75 "CLAUDE_SESSION_ROOT_ACQUIRE_FAILED"
+  /bin/chmod 700 "$CCO_SESSION_ROOT"
+fi
+
+if live_uuid=$(cco_thread_root_has_live_worker "$root" "$thread_hash" "$session_uuid"); then
+  cco_die 75 "CLAUDE_LAUNCH_THREAD_ROOT_LIVE: root=$root uuid=$live_uuid"
+elif (( $? == 2 )); then
+  cco_die 70 "CLAUDE_LAUNCH_REGISTRATION_AMBIGUOUS: root=$root"
+fi
 
 lineage_id=""
 registered_lineage_id=""
@@ -183,6 +197,17 @@ if [[ "$mode" == "resume" ]]; then
   if [[ "$runtime_schema" == "1" ]]; then
     legacy_subagent_model=$(<"$registration/subagent_model")
   fi
+  if [[ -f "$registration/parent_route_class" && ! -L "$registration/parent_route_class" &&
+        -f "$registration/parent_route_reason" && ! -L "$registration/parent_route_reason" ]]; then
+    parent_route_class=$(<"$registration/parent_route_class")
+    parent_route_reason=$(<"$registration/parent_route_reason")
+  elif [[ -e "$registration/parent_route_class" || -L "$registration/parent_route_class" ||
+          -e "$registration/parent_route_reason" || -L "$registration/parent_route_reason" ]]; then
+    cco_die 77 "CLAUDE_RESUME_ROUTE_INVALID: uuid=$session_uuid"
+  else
+    parent_route_class="legacy_unrouted"
+    parent_route_reason="legacy_registration"
+  fi
 fi
 
 if [[ -n "$predecessor_uuid" ]]; then
@@ -202,7 +227,22 @@ if [[ -n "$predecessor_uuid" ]]; then
 fi
 
 cco_validate_model "$parent_model" || cco_die 64 "INVALID_PARENT_MODEL"
-[[ -z "$parent_effort" || "$parent_effort" == "max" ]] || cco_die 64 "INVALID_PARENT_EFFORT"
+if [[ "$mode" == "new" ]]; then
+  [[ "$parent_model" == "claude-sonnet-5" || "$parent_model" == "claude-opus-5" || "$parent_model" == "sonnet" || "$parent_model" == "opus" ]] || cco_die 64 "INVALID_PARENT_MODEL"
+  cco_validate_parent_effort "$parent_effort" || cco_die 64 "INVALID_PARENT_EFFORT"
+  cco_validate_route_token "$parent_route_class" || cco_die 64 "INVALID_PARENT_ROUTE_CLASS"
+  cco_validate_route_token "$parent_route_reason" || cco_die 64 "INVALID_PARENT_ROUTE_REASON"
+  if [[ "$parent_model" == "claude-opus-5" || "$parent_model" == "opus" ]]; then
+    [[ "${CODEX_CLAUDE_PARENT_ROUTE_CLASS:-}" == "judgment" || "${CODEX_CLAUDE_PARENT_ROUTE_CLASS:-}" == "review" ]] || \
+      cco_die 64 "OPUS_PARENT_ROUTE_REQUIRED"
+    [[ "${CODEX_CLAUDE_PARENT_ROUTE_REASON:-}" == "material_judgment" || "${CODEX_CLAUDE_PARENT_ROUTE_REASON:-}" == "independent_review" ]] || \
+      cco_die 64 "OPUS_PARENT_ROUTE_REQUIRED"
+  fi
+else
+  [[ -z "$parent_effort" ]] || cco_validate_parent_effort "$parent_effort" || cco_die 64 "INVALID_PARENT_EFFORT"
+  cco_validate_route_token "$parent_route_class" && cco_validate_route_token "$parent_route_reason" || \
+    cco_die 77 "CLAUDE_RESUME_ROUTE_INVALID: uuid=$session_uuid"
+fi
 [[ "$runtime_schema" != "1" ]] || cco_validate_model "$legacy_subagent_model" || cco_die 64 "INVALID_SUBAGENT_MODEL"
 
 # Only this session's own lease is consulted. A resume must prove the session
@@ -250,6 +290,8 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "4" > "$registration/runtime_schema_version"
   print -r -- "0.3.1" > "$registration/runtime_version"
   print -r -- "$lineage_kind" > "$registration/lineage_kind"
+  print -r -- "$parent_route_class" > "$registration/parent_route_class"
+  print -r -- "$parent_route_reason" > "$registration/parent_route_reason"
   if [[ -n "$predecessor_uuid" ]]; then
     print -r -- "$predecessor_uuid" > "$registration/predecessor_session_uuid"
     print -r -- "$lineage_id" > "$registration/lineage_id"
@@ -545,6 +587,9 @@ ready_json=$("$CCO_JQ" -cn \
   --arg lease "$lease" \
   --arg mode "$mode" \
   --arg parent_model "$parent_model" \
+  --arg parent_effort "$parent_effort" \
+  --arg parent_route_class "$parent_route_class" \
+  --arg parent_route_reason "$parent_route_reason" \
   --arg runtime_schema "$runtime_schema" \
   --arg context_state "$context_state" \
   --arg lineage_kind "$lineage_kind" \
@@ -559,7 +604,8 @@ ready_json=$("$CCO_JQ" -cn \
     context_acknowledged:$context_acknowledged,
     lineage_kind:(if $lineage_kind == "" then null else $lineage_kind end),
     predecessor_session_uuid:(if $predecessor_uuid == "" then null else $predecessor_uuid end),
-    lineage_id:(if $lineage_id == "" then null else $lineage_id end)}')
+    lineage_id:(if $lineage_id == "" then null else $lineage_id end),
+    parent_effort:$parent_effort,parent_route:{class:$parent_route_class,reason:$parent_route_reason}}')
 print -r -- "CODEX_PTY_WORKER_READY $ready_json"
 
 cco_release_gate

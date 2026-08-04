@@ -36,8 +36,9 @@ daemon, and no claim to be an operating-system sandbox.
 
 - **Codex remains in charge.** It decides whether delegation is worthwhile and
   independently verifies the result. Claude is not forced onto every action.
-- **Claude keeps context.** One PTY-backed Opus parent can survive across related
-  tasks instead of rebuilding repository and outcome context every time.
+- **Claude keeps bounded context.** One PTY-backed Sonnet parent retains context
+  only for its assigned stage, then exits so the persistent outer goal stays in
+  Codex without accumulating an unbounded Claude transcript.
 - **CodeIndexer stays optional.** The parent gets credential-free loopback,
   read-only semantic discovery while direct source tools remain equally valid.
 - **Each model gets the work it fits.** Haiku searches and triages, Sonnet
@@ -56,7 +57,7 @@ daemon, and no claim to be an operating-system sandbox.
 flowchart TD
     U[User outcome and exact authority] --> C[Codex orchestrator]
     C -->|small or orchestrator-owned work| D[Codex works directly]
-    C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: Claude Opus 5]
+    C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: Claude Sonnet 5 / high]
     O -->|search / logs / first triage| H[Haiku roles]
     O -->|implementation / debugging| S[Sonnet roles]
     O -->|review / security| P[Opus roles]
@@ -142,17 +143,18 @@ source in both CLIs before relying on included plan usage.
 3. **Codex creates a bounded contract.** The handoff states the outcome, an
    observable `Done when`, boundaries, authoritative context, non-goals, and the
    evidence required back.
-4. **The plugin launches or reuses a worker.** Its registration is bound to the
-   current Codex thread, canonical repository root, and session UUID, and it
-   takes a lease keyed by that UUID. A launch is never refused because another
-   Claude process or registered worker shares the same root, so one Codex thread
-   may run as many of its own workers as the work needs.
-5. **The Opus parent owns execution.** It receives the task body through the PTY,
+4. **The plugin launches a worker for one bounded stage.** Its registration is bound to the
+   current Codex thread, canonical repository root, and session UUID. A second
+   live worker in the same current thread/root is refused; active assignments
+   serialize write custody by root and the HOME-wide busy limit defaults to two.
+5. **The Sonnet parent owns execution.** It receives the task body through the PTY,
    never as a process argument, and chooses its own method.
 6. **Claude routes supporting packages.** Search and triage go to Haiku,
    implementation and debugging to Sonnet, difficult review to Opus, and only
    exceptional long-horizon work to Fable.
-7. **The worker returns a compact handoff.** It reports changed artifacts,
+7. **The worker returns a compact handoff, then exits.** Codex sends `/exit`,
+   proves the named process group dead, and calls matching rotate or retire;
+   only then does that stage's assignment terminalize. It reports changed artifacts,
    decisive evidence, remaining uncertainty, deliberate non-actions, and edit
    custody.
 8. **Codex independently verifies.** The orchestrator decides whether the real
@@ -179,7 +181,7 @@ selects the worker.
 | Actor | Model | Effort | Responsibility |
 | --- | --- | --- | --- |
 | Codex orchestrator | Main session model; never pinned by this plugin | Main session setting | Intent, architecture, executor choice, authority, independent verification, final verdict |
-| Claude parent | `claude-opus-5` | `max` | Persistent execution context, decomposition, routing, synthesis, worker handoff |
+| Claude parent | `claude-sonnet-5` | `high` | Persistent execution context, decomposition, routing, synthesis, worker handoff |
 
 ### Claude execution roles
 
@@ -378,17 +380,21 @@ handoff.
 
 Codex should provide a compact contract with `Outcome`, observable `Done when`,
 `Boundaries`, `Authoritative context`, `Non-goals`, and `Required handoff`. The
-skill handles launch/reuse, task transport, terminal handoff, and safe fallback.
+skill handles one-stage launch, task transport, terminal handoff, and safe fallback.
 
 Parent default and non-secret override:
 
 ```zsh
 # Defaults shown explicitly; export only when changing them.
-export CODEX_CLAUDE_PARENT_MODEL=claude-opus-5
+export CODEX_CLAUDE_PARENT_MODEL=claude-sonnet-5
+export CODEX_CLAUDE_PARENT_EFFORT=high
 ```
 
-The parent model is passed with `claude --model`, and its effort is pinned to
-`max` for newly registered workers. The role roster is passed with
+The parent model is passed with `claude --model`, and its effort defaults to
+`high` for newly registered workers. `CODEX_CLAUDE_PARENT_EFFORT` accepts only
+`low`, `medium`, `high`, `xhigh`, or `max`. An Opus parent override additionally
+requires `CODEX_CLAUDE_PARENT_ROUTE_CLASS` and `CODEX_CLAUDE_PARENT_ROUTE_REASON`,
+which are retained in registration and READY metadata. The role roster is passed with
 `--agents` from a private runtime snapshot. A `PreToolUse` hook rejects unlisted
 roles and mismatched per-invocation model overrides. The launcher also clears
 inherited `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and legacy
@@ -432,17 +438,16 @@ Before a new assignment, Codex runs:
 
 Two completed compactions are the decision threshold. At the threshold or after
 any later unreviewed compaction, the normal path exits `76`. Codex may
-rotate or rerun with `--continue-current-context`. That acknowledgement covers
-the current compaction count, so related assignments remain convenient until
-another compaction creates a new decision point. Schema-1/2 sessions have no
+rotate or rerun with `--continue-current-context` before assigning the one
+bounded stage. A resumed active stage is recovery only and never receives a new
+assignment body. Schema-1/2 sessions have no
 observer; they remain usable but are reported as `unobserved_legacy`, never as
 fresh context.
 
-Rotation is optional, not counter-driven. It succeeds only after Codex attests a
-terminal handoff and custody return and the runtime finds no live lease, process
-group, or worker process for that exact session UUID. Sibling workers in the
-same root are a different principal's lifecycle and neither block the rotation
-nor are touched by it. The retirement record makes the old UUID non-resumable. `launch-worker.zsh --successor-of <uuid>` records each
+Rotation is optional, not counter-driven. After an accepted handoff, Codex sends
+`/exit`; it succeeds only after custody return and the runtime finds no live
+lease, process group, or worker process for that exact session UUID. The matching
+assignment is then terminalized and the old UUID becomes non-resumable. `launch-worker.zsh --successor-of <uuid>` records each
 registered attempt by storing the predecessor and rotation lineage in the new
 registration. A failed attempt does not reserve the lineage or prevent a retry.
 
@@ -552,6 +557,13 @@ From the installed skill directory:
 ./scripts/toggle-agents.zsh off --stop
 ./scripts/toggle-agents.zsh on
 ```
+
+`status` is observational and reports `busy/2`, active and orphaned assignments,
+blocked roots, and verified live workers. It creates nothing on an untouched
+HOME; with existing state it may take/create only the coordination lock, never
+worker or assignment records. It reads no task or transcript content and fails
+closed on ambiguous shared state. Recognized dead pre-registration leases are
+counted separately as `legacy_stale_leases`, without deleting them.
 
 `off` blocks launch/resume in the runtime and makes a conforming Codex
 orchestrator refuse assignments and polls at its next preflight, without killing

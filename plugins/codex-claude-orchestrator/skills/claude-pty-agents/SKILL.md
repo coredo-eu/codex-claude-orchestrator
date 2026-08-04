@@ -1,14 +1,11 @@
 ---
 name: claude-pty-agents
-description: Launch, reuse, and safely retire persistent Claude Code workers owned by the current Codex thread, with an Opus 5 parent, role-routed Haiku 4.5/Sonnet 5/Opus 5/Fable 5 subagents, read-only loopback CodeIndexer discovery, and GPT-5.6 native Codex fallback. Use when Claude is requested, when continuing a Codex-owned Claude outcome, or when bounded repository work benefits from context isolation or a long autonomous lifecycle. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
+description: Launch and safely retire one bounded Claude Code stage per owned session, with a Sonnet 5 parent by default, role-routed Haiku 4.5/Sonnet 5/Opus 5/Fable 5 subagents, read-only loopback CodeIndexer discovery, and GPT-5.6 native Codex fallback. Use when Claude is requested or a bounded repository stage benefits from context isolation. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
 ---
 
 # Claude PTY agents
 
-Use persistent Claude Code processes owned by this Codex thread. Launch as many
-as the work needs, including several in one canonical worktree; the launcher
-imposes no limit and never refuses a launch because another Claude process or
-registered worker shares the root. Keep Codex as the owner of intent, material
+Use persistent Claude Code processes owned by this Codex thread. Keep Codex as the owner of intent, material
 architecture or product tradeoffs, authority, conflicts, independent
 verification, and the final verdict. Treat this skill as transport and custody
 policy, never as additional authority.
@@ -22,6 +19,7 @@ Give an edit-capable worker one compact contract:
 - `Boundaries`: exact root, side effects, prohibited actions, and ownership.
 - `Authoritative context`: applicable source-of-truth material and unknowns.
 - `Non-goals`: adjacent work not to absorb.
+- `Known evidence`: concise observed facts and uncertainties.
 - `Required handoff`: material evidence, risk, uncertainty, missing authority,
   deliberate non-actions, and custody needed for Codex to decide.
 
@@ -31,11 +29,13 @@ credentials, modify Claude/Codex configuration, or perform destructive
 remediation. Such work requires separate Codex review and exact current-user
 authorization.
 
-The launcher enforces session ownership, not worktree exclusivity: it guarantees
-that no thread steers a session it did not register, but it does not serialize
-writers. When you run more than one edit-capable worker in a worktree, give each
-one a non-overlapping edit scope yourself — nothing below will detect or prevent
-two siblings editing the same files. Never resume, assign, rotate, retire, or
+The launcher never adopts a foreign or standalone Claude session. It permits at
+most two busy assignments per HOME by default (`CODEX_CLAUDE_MAX_BUSY_WORKERS`
+may be only `1` or `2`), serializes active write-capable
+assignments by canonical root, and rejects a second live worker for the same
+current thread/root at launch. Idle PTYs consume no busy capacity; an active
+record for a dead named worker remains an orphaned root block until explicit
+terminal reconciliation. Never resume, assign, rotate, retire, or
 otherwise adopt a session registered by another Codex thread, or any standalone
 Claude the user started.
 
@@ -52,6 +52,14 @@ Resolve this skill's directory, then check prerequisites and status:
 <skill-dir>/scripts/toggle-agents.zsh status
 command -v claude jq zsh git
 ```
+
+`status` is observational: it reports the shared `busy/2` assignment count, all
+active and orphaned assignments, blocked roots, and verified live workers
+without reading prompt or transcript content. It creates nothing on an untouched
+HOME. Where runtime state already exists it may take/create the coordination lock,
+but it never changes worker or assignment records. Ambiguous assignment or lease
+state fails closed. Recognized pre-registration root-hash leases are reported
+separately as `legacy_stale_leases`; that classification grants no cleanup authority.
 
 The file `$HOME/.codex/claude-pty-agents.disabled` is the sole ON/OFF state.
 Check it before every launch, resume, assignment, and PTY poll. Do not remove it
@@ -70,18 +78,21 @@ const worker = await tools.exec_command({
 ```
 
 The launcher requires `CODEX_THREAD_ID` and defaults the parent to
-`claude-opus-5`.
-Override only the parent with a non-secret process variable:
+`claude-sonnet-5` at `high` effort. Override only the parent with non-secret
+process variables. An Opus override must record a route class and reason:
 
 ```text
-CODEX_CLAUDE_PARENT_MODEL=<alias-or-model-id>
+CODEX_CLAUDE_PARENT_MODEL=claude-opus-5
+CODEX_CLAUDE_PARENT_EFFORT=high
+CODEX_CLAUDE_PARENT_ROUTE_CLASS=judgment
+CODEX_CLAUDE_PARENT_ROUTE_REASON=independent_review
 ```
 
 The launcher passes a private session-scoped `--agents` roster. Explorer,
 log-analyzer, and test-triager use `claude-haiku-4-5-20251001`; implementer and
 debugger use `claude-sonnet-5`; reviewer and security-reviewer use
-`claude-opus-5`. Long-horizon uses `claude-fable-5`. The Opus 5 parent starts at
-`max` effort. Haiku roles use the model's fixed behavior because Haiku 4.5 has
+`claude-opus-5`. Long-horizon uses `claude-fable-5`. The ordinary Sonnet parent
+starts at `high` effort. Haiku roles use the model's fixed behavior because Haiku 4.5 has
 no configurable effort; implementer uses `high`, reviewer uses `medium`, and
 debugger, security-reviewer, and long-horizon use `xhigh`. When Fable is outside
 the account's allowed model set, Claude Code
@@ -111,8 +122,8 @@ lease from the JSON object after `CODEX_PTY_WORKER_READY`. Reuse only that
 current-thread mapping.
 Never use bare `claude -c`, an unqualified `--resume`, or another session.
 
-Resume a dead, registered worker only after validating the same thread/root and
-confirming no native transfer:
+Resume only to recover the exact same bounded outcome after validating the same
+thread/root, confirming no native transfer, and proving no sibling live worker:
 
 ```text
 <skill-dir>/scripts/launch-worker.zsh /absolute/project/root --resume <exact-uuid>
@@ -141,8 +152,11 @@ If the gate exits `70`, the observer state is not trustworthy. Do not delete
 its pending marker or continue the parent; use the same handoff, shutdown, and
 rotation boundary.
 
-The old UUID is then non-resumable and each registered successor attempt records
-its lineage without preventing a retry after a failed launch.
+One successful assignment owns exactly one bounded stage/outcome. After accepting
+its handoff, Codex sends `/exit`, proves named process-group death, then calls
+the matching rotate or retire script. Only that terminal lifecycle step releases
+the assignment. A resumed active assignment is recovery only: do not rerun
+`assign-worker.zsh` or resend its full prompt.
 Claude Code still owns compaction; the runtime counts completed `PostCompact`
 events without retaining their summaries.
 
@@ -167,6 +181,11 @@ material decision or authority. Return one terminal marker after the handoff
 and custody return:
 CODEX_HANDOFF_READY <TASK_ID> <ready_for_verification|blocked>
 ```
+
+The seven headings are verbatim and ordered; do not replace them with routing
+metadata. The persistent outer goal and completion authority remain with Codex.
+Each Claude worker owns one bounded stage/outcome, and its handoff is evidence,
+never goal completion.
 
 Before every poll or other `write_stdin`, including an empty poll, recheck the
 kill switch and confirm the registration

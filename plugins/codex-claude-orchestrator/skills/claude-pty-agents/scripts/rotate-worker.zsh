@@ -45,12 +45,15 @@ trap 'cleanup; exit 143' TERM
 
 cco_registration_matches "$registration" "$root" "$path_hash" "$thread_hash" "$session_uuid" || \
   cco_die 77 "CLAUDE_ROTATE_OWNERSHIP_UNPROVEN: uuid=$session_uuid root=$root"
+cco_assignment_root_ready || cco_die 70 "CLAUDE_ROTATE_ASSIGNMENT_STATE_AMBIGUOUS: uuid=$session_uuid"
 
 retirement="$registration/retirement.json"
 if [[ -r "$retirement" ]]; then
   existing_state=$("$CCO_JQ" -r '.state // empty' "$retirement" 2>/dev/null || true)
   existing_task=$("$CCO_JQ" -r '.task_id // empty' "$retirement" 2>/dev/null || true)
   if [[ "$existing_state" == "rotated_context" && "$existing_task" == "$task_id" ]]; then
+    cco_terminalize_assignment "$session_uuid" "$task_id" "$root" "$thread_hash" "rotated_context" || \
+      cco_die 70 "CLAUDE_ROTATE_ASSIGNMENT_RECONCILE_FAILED: uuid=$session_uuid"
     print -r -- "CODEX_PTY_WORKER_ROTATED $("$CCO_JQ" -c . "$retirement")"
     exit 0
   fi
@@ -64,6 +67,8 @@ fi
 if live_reason=$(cco_worker_live_reason "$session_uuid"); then
   cco_die 75 "CLAUDE_ROTATE_WORKER_STILL_LIVE: $live_reason"
 fi
+cco_assignment_terminal_preflight "$session_uuid" "$task_id" "$root" "$thread_hash" "rotated_context" || \
+  cco_die 70 "CLAUDE_ROTATE_ASSIGNMENT_PRECHECK_FAILED: uuid=$session_uuid"
 
 umask 077
 rotated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -82,5 +87,7 @@ retirement_tmp=$(mktemp "$registration/.retirement.XXXXXX")
 /bin/chmod 600 "$retirement_tmp"
 /bin/mv -- "$retirement_tmp" "$retirement"
 retirement_tmp=""
+cco_terminalize_assignment "$session_uuid" "$task_id" "$root" "$thread_hash" "rotated_context" || \
+  cco_die 70 "CLAUDE_ROTATE_ASSIGNMENT_RECONCILE_FAILED: uuid=$session_uuid"
 
 print -r -- "CODEX_PTY_WORKER_ROTATED $("$CCO_JQ" -c . "$retirement")"

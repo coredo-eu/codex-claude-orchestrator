@@ -9,6 +9,7 @@ typeset -g CCO_GATE_LOCK=""
 typeset -g CCO_GATE_DIR=""
 typeset -g CCO_LEASE_ROOT=""
 typeset -g CCO_SESSION_ROOT=""
+typeset -g CCO_ASSIGNMENT_ROOT=""
 typeset -g CCO_JQ=""
 typeset -g CCO_GATE_KIND=""
 typeset -g CCO_GATE_FD=""
@@ -30,6 +31,7 @@ cco_init() {
   CCO_GATE_DIR="$CCO_STATE_DIR/claude-pty-agents.gate.d"
   CCO_LEASE_ROOT="$CCO_STATE_DIR/claude-pty-leases"
   CCO_SESSION_ROOT="$CCO_STATE_DIR/claude-pty-sessions"
+  CCO_ASSIGNMENT_ROOT="$CCO_STATE_DIR/claude-pty-assignments"
   CCO_JQ=$(command -v jq 2>/dev/null) || cco_die 69 "JQ_NOT_FOUND"
 }
 
@@ -114,6 +116,178 @@ cco_is_short_text() {
 cco_validate_model() {
   local model="$1"
   [[ -n "$model" && ${#model} -le 128 && "$model" != *$'\n'* && "$model" =~ '^[A-Za-z0-9._:-]+$' ]]
+}
+
+cco_validate_parent_effort() {
+  [[ "$1" == "low" || "$1" == "medium" || "$1" == "high" || "$1" == "xhigh" || "$1" == "max" ]]
+}
+
+cco_validate_route_token() {
+  [[ "$1" =~ '^[a-z][a-z0-9_-]{0,63}$' ]]
+}
+
+cco_assignment_root_ready() {
+  if [[ -e "$CCO_ASSIGNMENT_ROOT" || -L "$CCO_ASSIGNMENT_ROOT" ]]; then
+    [[ -d "$CCO_ASSIGNMENT_ROOT" && ! -L "$CCO_ASSIGNMENT_ROOT" ]] || return 1
+  else
+    /bin/mkdir -- "$CCO_ASSIGNMENT_ROOT" 2>/dev/null || return 1
+    /bin/chmod 700 "$CCO_ASSIGNMENT_ROOT" || return 1
+  fi
+}
+
+cco_assignment_record_valid() {
+  local record="$1" record_uuid basename
+  [[ -f "$record" && ! -L "$record" ]] || return 1
+  basename="${record:t}"
+  record_uuid=$("$CCO_JQ" -r '.session_uuid // empty' "$record" 2>/dev/null) || return 1
+  [[ "$basename" == "${record_uuid:l}.json" ]] || return 1
+  "$CCO_JQ" -e '
+    type == "object" and
+    ((.state == "active" and (keys | sort) == ["access","assigned_at","root","session_uuid","state","task_id","thread_hash","version"]) or
+     ((.state == "rotated_context" or .state == "transferred_native") and (keys | sort) == ["access","assigned_at","root","session_uuid","state","task_id","terminal_at","thread_hash","version"])) and
+    .version == 1 and .access == "write" and
+    (.root | type == "string" and startswith("/") and length > 1) and
+    (.session_uuid | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+    (.task_id | type == "string" and length > 0 and length <= 200 and contains("\n") | not) and
+    (.thread_hash | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.assigned_at | type == "string" and length > 0)
+  ' "$record" >/dev/null 2>&1
+}
+
+# Iterate all active assignment records. An unreadable, symlinked, or malformed
+# entry is ambiguous shared state and intentionally fails closed.
+cco_active_assignments() {
+  local record
+  [[ -e "$CCO_ASSIGNMENT_ROOT" || -L "$CCO_ASSIGNMENT_ROOT" ]] || return 0
+  [[ -d "$CCO_ASSIGNMENT_ROOT" && ! -L "$CCO_ASSIGNMENT_ROOT" ]] || return 2
+  for record in "$CCO_ASSIGNMENT_ROOT"/*(N); do
+    [[ "$record" == *.json ]] || return 2
+    cco_assignment_record_valid "$record" || return 2
+    [[ "$("$CCO_JQ" -r '.state' "$record")" == "active" ]] && print -r -- "$record"
+  done
+  return 0
+}
+
+cco_assignment_worker_live() {
+  local record="$1" uuid
+  uuid=$("$CCO_JQ" -r '.session_uuid' "$record" 2>/dev/null) || return 1
+  cco_worker_live_reason "$uuid" >/dev/null 2>&1
+}
+
+# Recognize only the historical root-hash lease shape that predates durable
+# registrations and process-group recording. It is observational compatibility,
+# never deletion authority: the recorded owner identity must be dead and no
+# process may carry the exact recorded session/name pair.
+cco_legacy_lease_is_stale() {
+  local lease="$1" observed_owner_start="${2:-}" process_args="${3:-}" owner_pid owner_start uuid root name
+  [[ -d "$lease" && ! -L "$lease" && ! -e "$lease/process_group" && ! -L "$lease/process_group" ]] || return 1
+  for field in owner_pid process_start session_uuid root name; do
+    [[ -f "$lease/$field" && ! -L "$lease/$field" ]] || return 1
+  done
+  owner_pid=$(<"$lease/owner_pid")
+  owner_start=$(<"$lease/process_start")
+  uuid=$(<"$lease/session_uuid")
+  root=$(<"$lease/root")
+  name=$(<"$lease/name")
+  [[ "$owner_pid" == <-> && -n "$owner_start" && "$root" == /* ]] || return 1
+  cco_is_uuid "$uuid" || return 1
+  [[ "${lease:t}" == "$(cco_hash "$root")" ]] || return 1
+  [[ -z "$observed_owner_start" || "$observed_owner_start" != "${(j: :)${(z)owner_start}}" ]] || return 1
+  if [[ "$process_args" == *"--name $name"* &&
+        ( "$process_args" == *"--session-id $uuid"* || "$process_args" == *"--resume $uuid"* ) ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# Fast observational validation for status. Unlike lifecycle admission it does
+# not recompute every historical root hash; it cross-checks the lease key and
+# identity against the durable registration that already stores that hash.
+cco_lease_has_status_registration() {
+  local lease="$1" uuid root group registration key registered_hash runtime_schema field
+  [[ -d "$lease" && ! -L "$lease" ]] || return 1
+  for field in owner_pid process_start process_group session_uuid root name; do
+    [[ -f "$lease/$field" && ! -L "$lease/$field" ]] || return 1
+  done
+  uuid=$(<"$lease/session_uuid")
+  root=$(<"$lease/root")
+  group=$(<"$lease/process_group")
+  cco_is_uuid "$uuid" || return 1
+  [[ "$root" == /* && "$group" == <-> ]] || return 1
+  registration="$CCO_SESSION_ROOT/$uuid"
+  [[ -d "$registration" && ! -L "$registration" ]] || return 1
+  for field in owner_kind root path_hash session_uuid process_group runtime_schema_version runtime_version; do
+    [[ -f "$registration/$field" && ! -L "$registration/$field" ]] || return 1
+  done
+  runtime_schema=$(<"$registration/runtime_schema_version")
+  registered_hash=$(<"$registration/path_hash")
+  key="${lease:t}"
+  [[ "$key" == "$uuid" || "$key" == "$registered_hash" ]] || return 1
+  [[ "$(<"$registration/owner_kind")" == "codex-pty-worker" &&
+     "$(<"$registration/root")" == "$root" &&
+     "$(<"$registration/session_uuid")" == "$uuid" &&
+     "$(<"$registration/process_group")" == "$group" &&
+     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" ) ]]
+}
+
+# Atomically replace an active record with a terminal audit record. Absence is
+# legacy-compatible; any nonmatching or malformed record is a conflict.
+cco_assignment_matches() {
+  local record="$1" uuid="$2" task_id="$3" root="$4" thread_hash="$5"
+  cco_assignment_record_valid "$record" || return 1
+  [[ "$("$CCO_JQ" -r '.session_uuid' "$record")" == "$uuid" &&
+     "$("$CCO_JQ" -r '.task_id' "$record")" == "$task_id" &&
+     "$("$CCO_JQ" -r '.root' "$record")" == "$root" &&
+     "$("$CCO_JQ" -r '.thread_hash' "$record")" == "$thread_hash" ]]
+}
+
+cco_assignment_terminal_preflight() {
+  local uuid="$1" task_id="$2" root="$3" thread_hash="$4" terminal_state="$5" record state
+  record="$CCO_ASSIGNMENT_ROOT/$uuid.json"
+  [[ -e "$record" || -L "$record" ]] || return 0
+  cco_assignment_matches "$record" "$uuid" "$task_id" "$root" "$thread_hash" || return 2
+  state=$("$CCO_JQ" -r '.state' "$record")
+  [[ "$state" == "active" || "$state" == "$terminal_state" ]]
+}
+
+# Absence is legacy-compatible. Active matching records transition atomically;
+# an identical terminal record is idempotent. Every other record is a conflict.
+cco_terminalize_assignment() {
+  local uuid="$1" task_id="$2" root="$3" thread_hash="$4" terminal_state="$5" record tmp state
+  record="$CCO_ASSIGNMENT_ROOT/$uuid.json"
+  [[ -e "$record" || -L "$record" ]] || return 0
+  cco_assignment_matches "$record" "$uuid" "$task_id" "$root" "$thread_hash" || return 2
+  state=$("$CCO_JQ" -r '.state' "$record")
+  [[ "$state" == "active" ]] || { [[ "$state" == "$terminal_state" ]] && return 0 || return 3; }
+  tmp=$(mktemp "$CCO_ASSIGNMENT_ROOT/.assignment.XXXXXX") || return 1
+  "$CCO_JQ" --arg state "$terminal_state" --arg terminal_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.state = $state | .terminal_at = $terminal_at' "$record" > "$tmp" || { /bin/rm -f -- "$tmp"; return 1; }
+  /bin/chmod 600 "$tmp"
+  /bin/mv -- "$tmp" "$record"
+}
+
+# Never discover standalone Claude: this examines only durable registrations
+# created by this runtime and only the current thread/root identity.
+cco_thread_root_has_live_worker() {
+  local root="$1" thread_hash="$2" except_uuid="${3:-}" registration uuid observed_root observed_thread
+  [[ -e "$CCO_SESSION_ROOT" || -L "$CCO_SESSION_ROOT" ]] || return 1
+  [[ -d "$CCO_SESSION_ROOT" && ! -L "$CCO_SESSION_ROOT" ]] || return 2
+  for registration in "$CCO_SESSION_ROOT"/*(N); do
+    [[ -d "$registration" && ! -L "$registration" ]] || return 2
+    for field in root thread_hash session_uuid; do
+      [[ -r "$registration/$field" ]] || return 2
+    done
+    observed_root=$(<"$registration/root")
+    observed_thread=$(<"$registration/thread_hash")
+    uuid=$(<"$registration/session_uuid")
+    [[ "$observed_root" == "$root" && "$observed_thread" == "$thread_hash" && "$uuid" != "$except_uuid" ]] || continue
+    cco_is_uuid "$uuid" || return 2
+    if cco_worker_live_reason "${uuid:l}" >/dev/null 2>&1; then
+      print -r -- "${uuid:l}"
+      return 0
+    fi
+  done
+  return 1
 }
 
 cco_acquire_gate() {

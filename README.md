@@ -61,7 +61,7 @@ flowchart TD
     O -->|search / logs / first triage| H[Haiku roles]
     O -->|implementation / debugging| S[Sonnet roles]
     O -->|review / security| P[Opus roles]
-    O -->|exceptional long horizon| F[Fable role<br/>Opus parent fallback]
+    O -->|exceptional long horizon| F[Fable role<br/>current-parent fallback]
     H -->|distilled evidence| O
     S -->|bounded result| O
     P -->|independent findings| O
@@ -79,7 +79,7 @@ flowchart TD
 - **Better allocation of expensive reasoning.** Strong models spend more time
   on intent, synthesis, difficult implementation, and review instead of routine
   file search or log classification.
-- **Less repeated setup.** The Opus parent retains repository and task context,
+- **Less repeated setup.** The bounded parent retains repository and task context,
   so related follow-ups do not each pay the full cold-start cost.
 - **Higher throughput when work separates cleanly.** Independent discovery,
   triage, implementation, and review packages can use different contexts and
@@ -255,12 +255,12 @@ Suppose the user asks Codex to fix an intermittent authorization regression:
 
 1. Codex determines that the task is bounded but benefits from persistent
    execution context, then transfers one explicit edit scope to Claude.
-2. The Opus parent asks `explorer` on Haiku to map the relevant code and
+2. The Sonnet parent asks `explorer` on Haiku to map the relevant code and
    `test-triager` on Haiku to classify the failure evidence.
 3. `debugger` on Sonnet establishes the likely cause without editing source.
 4. `implementer` on Sonnet receives sole edit custody and makes the bounded
    change.
-5. The Opus parent may route a focused regression review to `reviewer`, or a
+5. The parent may route a focused regression review to `reviewer`, or a
    security-sensitive boundary to `security-reviewer`.
 6. Claude returns evidence and custody. Codex inspects the real diff and tests,
    resolves any material uncertainty, and gives the user the final verdict.
@@ -404,8 +404,8 @@ delegation layer.
 
 ### Claude routing details
 
-Claude Code inherits the Opus parent when Fable is outside the account's
-allowed model set. If Fable fails for another availability reason, the parent
+Claude Code inherits the current parent model when Fable is outside the
+account's allowed model set. If Fable fails for another availability reason, the parent
 retains the outcome instead of silently routing it to a cheaper role. The
 roster deliberately denies built-in Explore, Plan, general-purpose,
 statusline-setup, and claude-code-guide agents. A runtime hook rejects unlisted

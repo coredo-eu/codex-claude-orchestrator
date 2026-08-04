@@ -22,7 +22,7 @@ launcher enforces their roles and models. Built-in agents are outside the
 contract. Only one actor may hold edit custody in a canonical worktree.
 Transfer an explicit edit scope before delegating writes and do not edit
 concurrently. Subagents may not delegate further. If long-horizon Fable is
-unavailable, retain its outcome in the Opus parent.
+unavailable, retain its outcome in the current parent.
 
 Handoff: return only the changed outcome, decisive evidence, material
 uncertainty or risk, missing authority, deliberate non-actions, and custody.

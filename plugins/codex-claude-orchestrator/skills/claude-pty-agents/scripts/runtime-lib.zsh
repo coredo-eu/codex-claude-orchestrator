@@ -212,7 +212,7 @@ cco_lease_has_status_registration() {
   [[ "$key" == "$uuid" || "$key" == "$registered_hash" ]] || return 1
   [[ "$(<"$registration/owner_kind")" == "codex-pty-worker" && "$(<"$registration/root")" == "$root" &&
      "$(<"$registration/session_uuid")" == "$uuid" && "$(<"$registration/process_group")" == "$group" &&
-     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" ) ]]
+     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" ) ]]
 }
 
 cco_assignment_matches() {
@@ -477,5 +477,5 @@ cco_lease_has_durable_registration() {
      "$(<"$registration/path_hash")" == "$path_hash" &&
      "$(<"$registration/session_uuid")" == "$uuid" &&
      "$(<"$registration/process_group")" == "$(<"$lease/process_group")" &&
-     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" ) ]]
+     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" ) ]]
 }

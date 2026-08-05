@@ -82,6 +82,9 @@ other availability failures, the parent retains
 the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted
 roles or mismatched model overrides. Read-only roles receive Bash in `plan`
 mode when the parent permission mode permits that override. The default parent
+uses this roster proactively when independent evidence, context isolation, or
+safe parallelism has net value. Roles are optional routes, not a mandatory
+pipeline, and no fixed task-size threshold replaces outcome judgment. The default parent
 starts in Claude Code Auto Mode to avoid manual approval queues; current Claude
 Code versions make subagents inherit parent Auto Mode, so their remaining
 read-only boundary is the role contract and absence of Edit/Write tools, not an
@@ -165,6 +168,31 @@ the assignment. A resumed active assignment is recovery only: do not rerun
 `assign-worker.zsh` or resend its full prompt.
 Claude Code still owns compaction; the runtime counts completed `PostCompact`
 events without retaining their summaries.
+
+New stages also receive a parent-only `PreToolUse` checkpoint. Its private
+registration state contains only counters, request identifiers, usage numbers,
+timestamps, reason codes, and the task identifier; it never stores transcript
+content. Subagent-internal tool calls are excluded. The default warning/checkpoint
+envelope is 32/64 observed parent requests, 128/256 parent tool calls,
+131072/262144 maximum observed `cache_read_input_tokens`, and 600/1200 elapsed
+seconds. The parent-tool bound remains active when transcript usage is delayed
+or unavailable. Override these only at
+new launch with `CODEX_CLAUDE_STAGE_WARN_REQUESTS`,
+`CODEX_CLAUDE_STAGE_MAX_REQUESTS`,
+`CODEX_CLAUDE_STAGE_WARN_PARENT_TOOL_CALLS`,
+`CODEX_CLAUDE_STAGE_MAX_PARENT_TOOL_CALLS`,
+`CODEX_CLAUDE_STAGE_WARN_CACHE_READ_TOKENS`,
+`CODEX_CLAUDE_STAGE_MAX_CACHE_READ_TOKENS`,
+`CODEX_CLAUDE_STAGE_WARN_SECONDS`, and `CODEX_CLAUDE_STAGE_MAX_SECONDS`; the
+validated policy is then immutable in that session snapshot. Transcript usage
+can lag, so request/cache observations are best-effort; elapsed time remains a
+separate bound.
+
+A warning adds context without approving or denying the requested tool. A
+checkpoint denies the next parent tool and asks Claude to return the required
+handoff. It does not kill or retire the process, claim `Done when`, complete the
+outer goal, or transfer custody. Codex still judges the handoff and performs the
+normal terminal lifecycle.
 
 After a successful gate, immediately recheck the kill switch and retirement
 marker, then send one task body without putting it in a process argument.

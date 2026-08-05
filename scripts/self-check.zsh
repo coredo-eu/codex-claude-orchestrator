@@ -9,6 +9,7 @@ for script in "$repo_root"/scripts/*.zsh(N) "$skill"/scripts/*.zsh(N); do
 done
 
 python3 "$repo_root/tests/test_invariants.py"
+python3 "$repo_root/tests/test_stage_guard.py"
 python3 "$repo_root/tests/test_runtime.py"
 
 print -- "codex-claude-orchestrator self-check: PASS"

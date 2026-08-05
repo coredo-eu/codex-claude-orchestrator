@@ -144,7 +144,9 @@ source in both CLIs before relying on included plan usage.
    never as a process argument, and chooses its own method.
 6. **Claude routes supporting packages.** Search and triage go to Haiku,
    implementation and debugging to Sonnet, difficult review to Opus, and only
-   exceptional long-horizon work to Fable.
+   exceptional long-horizon work to Fable. The roster is used proactively when
+   isolation, independent evidence, or safe parallelism has net value; it is
+   not a mandatory pipeline.
 7. **The worker returns a compact handoff, then exits.** Codex proves the named
    process group dead and calls matching rotate or retire, which terminalizes the
    assignment. It reports changed artifacts,
@@ -375,8 +377,8 @@ handled without that classifier call under current Claude Code behavior.
 
 ### Persistent-parent context
 
-Claude Code remains the sole owner of context compaction. New runtime-schema-3
-workers add a `PostCompact` observer that appends one literal event marker and
+Claude Code remains the sole owner of context compaction. Runtime schema 3 and
+newer workers add a `PostCompact` observer that appends one literal event marker and
 drains the hook payload without parsing, printing, or retaining
 `compact_summary`.
 
@@ -556,11 +558,19 @@ cooperative controls, not proof against a process deliberately detached from its
 group; after a crash, lost PTY, or ambiguous identity, stay read-only or use an
 isolated worktree.
 
-Version `0.3.0` introduces runtime schema 3 for the content-free compaction
-observer and assignment decision checkpoint. Schema-2 resumes still reuse their
-original roster and settings snapshot, and schema-1 resumes keep their original
-single-subagent-model snapshot. Both remain usable but report context as
-`unobserved_legacy`; neither is silently converted. Unversioned legacy
+Version `0.3.1` introduces runtime schema 4 for a parent-stage health checkpoint
+in addition to the schema-3 content-free compaction observer. The `PreToolUse`
+hook stores only private counters, request identifiers, usage numbers,
+timestamps, and reason codes. It warns once, then denies another parent tool at
+the snapshotted request/parent-tool/cache-read/elapsed envelope so the worker
+returns a handoff. The parent-tool bound remains enforceable when transcript
+usage is delayed or unavailable. It excludes subagent-internal tools and never kills, retires, transfers
+custody, or declares the outer goal complete. Transcript usage can lag, so its
+request/cache observations are best-effort; elapsed time remains independent.
+Schema-3 resumes preserve their original snapshot, while schema-2 resumes still
+reuse their original roster and settings snapshot, and schema-1 resumes keep
+their original single-subagent-model snapshot. All remain usable; schema 1/2
+report context as `unobserved_legacy`, and none is silently converted. Unversioned legacy
 registrations are not adopted.
 
 ## Uninstall and state cleanup

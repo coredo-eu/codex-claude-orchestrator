@@ -97,7 +97,7 @@ acknowledged=0
 context_state="observed"
 continuation_scope="none"
 
-if [[ "$runtime_schema" == "3" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
   counts=$(cco_context_counts "$registration") || \
     cco_die 70 "CLAUDE_ASSIGN_CONTEXT_CORRUPT: uuid=$session_uuid"
   events="${counts%% *}"
@@ -156,9 +156,47 @@ assign_json=$("$CCO_JQ" -cn \
 assignment_record="$CCO_ASSIGNMENT_ROOT/$session_uuid.json"
 [[ ! -e "$assignment_record" && ! -L "$assignment_record" ]] || cco_die 77 "CLAUDE_ASSIGN_RECORD_EXISTS: uuid=$session_uuid"
 assignment_tmp=$(mktemp "$CCO_ASSIGNMENT_ROOT/.assignment.XXXXXX") || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
+assigned_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+assigned_at_epoch=$(date +%s)
+[[ "$assigned_at_epoch" == <-> ]] || cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
 "$CCO_JQ" -cn \
   --arg uuid "$session_uuid" --arg root "$root" --arg task_id "$task_id" --arg thread_hash "$thread_hash" \
-  --arg assigned_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  --arg assigned_at "$assigned_at" \
   '{version:1,state:"active",access:"write",session_uuid:$uuid,root:$root,task_id:$task_id,thread_hash:$thread_hash,assigned_at:$assigned_at}' > "$assignment_tmp" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
+
+health_assignment_tmp=""
+health_cursor_tmp=""
+transcript_baseline=0
+if [[ "$runtime_schema" == "4" ]]; then
+  health_dir="$registration/health"
+  [[ -d "$health_dir" && ! -L "$health_dir" && ! -e "$health_dir/checkpoint.json" && ! -L "$health_dir/checkpoint.json" ]] || \
+    cco_die 77 "CLAUDE_ASSIGN_STAGE_CHECKPOINTED: uuid=$session_uuid"
+  for health_file in health_schema_version policy.json assignment.json parent_tool_calls agent_calls transcript_cursor_bytes max_cache_read_input_tokens request_keys.log warning_emitted; do
+    [[ -f "$health_dir/$health_file" && ! -L "$health_dir/$health_file" ]] || \
+      cco_die 70 "CLAUDE_ASSIGN_STAGE_HEALTH_CORRUPT: uuid=$session_uuid"
+  done
+  transcript_candidates=("$CCO_HOME/.claude/projects"/**/"$session_uuid.jsonl"(N))
+  if (( ${#transcript_candidates[@]} == 1 )) && \
+     [[ -f "$transcript_candidates[1]" && ! -L "$transcript_candidates[1]" ]]; then
+    transcript_baseline=$(/usr/bin/stat -f '%z' "$transcript_candidates[1]" 2>/dev/null || \
+      /usr/bin/stat -c '%s' "$transcript_candidates[1]" 2>/dev/null || print -r -- "0")
+    [[ "$transcript_baseline" == <-> ]] || transcript_baseline=0
+  fi
+  health_assignment_tmp=$(mktemp "$health_dir/.assignment.XXXXXX") || \
+    cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
+  "$CCO_JQ" -cn --arg task_id "$task_id" --argjson assigned_at_epoch "$assigned_at_epoch" \
+    '{schema_version:1,assigned_at_epoch:$assigned_at_epoch,task_id:$task_id}' \
+    > "$health_assignment_tmp" || cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
+  /bin/chmod 600 "$health_assignment_tmp" || cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
+  health_cursor_tmp=$(mktemp "$health_dir/.transcript-cursor.XXXXXX") || \
+    cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
+  print -r -- "$transcript_baseline" > "$health_cursor_tmp"
+  /bin/chmod 600 "$health_cursor_tmp" || cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
+fi
+if [[ "$runtime_schema" == "4" ]]; then
+  /bin/mv -- "$health_cursor_tmp" "$health_dir/transcript_cursor_bytes" && \
+    /bin/mv -- "$health_assignment_tmp" "$health_dir/assignment.json" || \
+    cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
+fi
 /bin/chmod 600 "$assignment_tmp" && /bin/mv -- "$assignment_tmp" "$assignment_record" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
 print -r -- "CODEX_PTY_WORKER_ASSIGN $assign_json"

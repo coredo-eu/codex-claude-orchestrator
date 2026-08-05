@@ -347,9 +347,11 @@ def main() -> int:
             "long-horizon": "xhigh",
         }
         require(
-            ready["runtime_schema"] == "3"
+            ready["runtime_schema"] == "4"
             and ready["context_state"] == "observed"
             and ready["context_compactions"] == 0
+            and ready["stage_health_state"] == "observed"
+            and ready["stage_health_policy"]["max_requests"] == 64
             and ready["lineage_kind"] == "standalone",
             f"new worker lifecycle marker drift: {ready}",
         )
@@ -419,19 +421,21 @@ def main() -> int:
         require(json.loads(agents_path.read_text(encoding="utf-8")) == agents, "Claude did not receive roster snapshot")
         registration_dir = runtime_dir.parent
         require(
-            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "3",
+            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "4",
             "schema file drift",
         )
         require(
-            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.3.0",
+            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.3.1",
             "runtime version drift",
         )
         hook_path = runtime_dir / "worker-subagent-contract.zsh"
         router_path = runtime_dir / "worker-agent-router.zsh"
         compaction_path = runtime_dir / "worker-compaction-counter.zsh"
+        stage_guard_path = runtime_dir / "worker-stage-guard.zsh"
         require(stat.S_IMODE(hook_path.stat().st_mode) == 0o700, "hook snapshot is not 0700")
         require(stat.S_IMODE(router_path.stat().st_mode) == 0o700, "router snapshot is not 0700")
         require(stat.S_IMODE(compaction_path.stat().st_mode) == 0o700, "compaction snapshot is not 0700")
+        require(stat.S_IMODE(stage_guard_path.stat().st_mode) == 0o700, "stage guard snapshot is not 0700")
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         require(settings["permissions"].get("defaultMode") == "auto", "Claude parent auto mode drift")
         hook_command = settings["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
@@ -439,7 +443,14 @@ def main() -> int:
             shlex.split(hook_command) == [zsh, str(hook_path)],
             "settings hook is not pinned to the snapshot",
         )
-        router_config = settings["hooks"]["PreToolUse"][0]
+        stage_config = settings["hooks"]["PreToolUse"][0]
+        require(stage_config["matcher"] == "*", "stage guard does not match every parent tool")
+        require(
+            shlex.split(stage_config["hooks"][0]["command"])
+            == [zsh, str(stage_guard_path), str(registration_dir)],
+            "settings stage guard is not pinned to this registration",
+        )
+        router_config = settings["hooks"]["PreToolUse"][1]
         require(router_config["matcher"] == "Agent", "router hook does not match Agent")
         router_command = router_config["hooks"][0]["command"]
         require(
@@ -455,6 +466,26 @@ def main() -> int:
         require(stat.S_IMODE(context_dir.stat().st_mode) == 0o700, "context directory is not 0700")
         for path in context_dir.iterdir():
             require(stat.S_IMODE(path.stat().st_mode) == 0o600, f"context state is not 0600: {path.name}")
+        health_dir = registration_dir / "health"
+        require(stat.S_IMODE(health_dir.stat().st_mode) == 0o700, "health directory is not 0700")
+        health_policy = json.loads((health_dir / "policy.json").read_text(encoding="utf-8"))
+        require(
+            health_policy
+            == {
+                "schema_version": 1,
+                "warn_requests": 32,
+                "max_requests": 64,
+                "warn_parent_tool_calls": 128,
+                "max_parent_tool_calls": 256,
+                "warn_cache_read_input_tokens": 131072,
+                "max_cache_read_input_tokens": 262144,
+                "warn_elapsed_seconds": 600,
+                "max_elapsed_seconds": 1200,
+            },
+            f"stage policy defaults drift: {health_policy}",
+        )
+        for path in health_dir.iterdir():
+            require(stat.S_IMODE(path.stat().st_mode) == 0o600, f"health state is not 0600: {path.name}")
         deny_rules = settings["permissions"]["deny"]
         require(
             f"Edit(/{home}/.claude/**)" in deny_rules and f"Edit(/{repo}/.codex/**)" in deny_rules,
@@ -733,6 +764,12 @@ def main() -> int:
         # content-free line per event and one acknowledged generation.
         first_assignment = run_assign(zsh, repo, worker_uuid, "runtime-test", env)
         require(first_assignment.returncode == 0, f"fresh assignment was refused: {first_assignment}")
+        stage_assignment = json.loads((health_dir / "assignment.json").read_text(encoding="utf-8"))
+        require(
+            stage_assignment["task_id"] == "runtime-test"
+            and stage_assignment["assigned_at_epoch"] > 0,
+            f"stage assignment baseline drift: {stage_assignment}",
+        )
 
         summary_sentinel = "SUMMARY-SENTINEL-MUST-NOT-PERSIST"
         compact_payload = json.dumps(
@@ -968,7 +1005,7 @@ def main() -> int:
         require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
         require(resumed_observed["effort_level"] is None, "resume inherited a global effort override")
         require(
-            resumed_ready["runtime_schema"] == "3"
+            resumed_ready["runtime_schema"] == "4"
             and resumed_ready["context_state"] == "decision_required"
             and resumed_ready["context_compactions"] == 3,
             f"resume lifecycle state drift: {resumed_ready}",

@@ -158,6 +158,9 @@ def main() -> int:
         require(heading in worker_prompt, f"worker prompt contract missing {heading}")
     require("choose the method" in worker_prompt.casefold(), "worker prompt does not grant method choice")
     require("launcher enforces their roles and models" in worker_prompt, "runtime routing boundary missing")
+    require("Use a listed role proactively" in worker_prompt, "outcome-selected proactive delegation missing")
+    require("Roles are routes, not a mandatory pipeline" in worker_prompt, "optional role topology missing")
+    require("checkpoint neither" in worker_prompt and "transfers custody" in worker_prompt, "checkpoint authority boundary missing")
     require(len(worker_prompt.split()) <= 290, "worker prompt is no longer lean")
     headings = ("Outcome", "Done when", "Boundaries", "Authoritative context", "Non-goals", "Known evidence", "Required handoff")
     heading_contract = worker_prompt.split("The assignment body preserves these headings verbatim and in this order:", 1)[1]
@@ -170,6 +173,7 @@ def main() -> int:
 
     hook_text = read(SKILL / "scripts/worker-subagent-contract.zsh")
     router_text = read(SKILL / "scripts/worker-agent-router.zsh")
+    stage_guard_text = read(SKILL / "scripts/worker-stage-guard.zsh")
     hook_context = re.search(r"context='([^']+)'", hook_text)
     require(hook_context is not None, "subagent hook context missing")
     require("choose the method" in hook_context.group(1).casefold(), "subagent hook prescribes method")
@@ -178,6 +182,17 @@ def main() -> int:
         require(role in router_text and model in router_text, f"router mapping missing: {role}")
     require('"permissionDecision":"deny"' in router_text, "router lacks a blocking decision")
     require("subagent_type" in router_text, "router does not inspect the requested role")
+    for marker in (
+        'permissionDecision:"deny"',
+        "cache_read_input_tokens",
+        "request_keys.log",
+        "agent_id",
+        "checkpoint.json",
+        "This checkpoint is not outer-goal completion",
+        "max_parent_tool_calls",
+    ):
+        require(marker in stage_guard_text, f"parent-stage checkpoint contract missing: {marker}")
+    require("message.content" not in stage_guard_text, "stage guard inspects transcript content")
 
     require(
         "CODEX_CLAUDE_PARENT_MODEL:-claude-sonnet-5" in launcher,
@@ -199,14 +214,15 @@ def main() -> int:
     require("--strict-mcp-config" in launcher, "external MCP configurations are not excluded")
     require("--mcp-config" not in launcher, "launcher must not inject an MCP configuration")
 
-    require("runtime_schema_version" in launcher and 'print -r -- "3"' in launcher, "runtime schema-3 pin missing")
-    require('print -r -- "0.3.0" > "$registration/runtime_version"' in launcher, "runtime schema-3 version drift")
+    require("runtime_schema_version" in launcher and 'print -r -- "4"' in launcher, "runtime schema-4 pin missing")
+    require('print -r -- "0.3.1" > "$registration/runtime_version"' in launcher, "runtime schema-4 version drift")
     for snapshot in (
         "worker-agents.json",
         "worker-system-prompt.txt",
         "worker-subagent-contract.zsh",
         "worker-agent-router.zsh",
         "worker-compaction-counter.zsh",
+        "worker-stage-guard.zsh",
         "worker-settings.json",
     ):
         require(f'runtime/{snapshot}' in launcher or f'runtime_dir/{snapshot}' in launcher or snapshot in launcher, f"snapshot missing: {snapshot}")
@@ -214,6 +230,8 @@ def main() -> int:
     require("$runtime_hook" in launcher, "generated settings do not pin hook snapshot")
     require("$runtime_agent_router" in launcher, "generated settings do not pin router snapshot")
     require("$runtime_compaction_counter" in launcher, "generated settings do not pin PostCompact observer")
+    require("$runtime_stage_guard" in launcher and 'matcher: "*"' in launcher, "generated settings do not pin parent-stage guard")
+    require("CODEX_CLAUDE_STAGE_WARN_PARENT_TOOL_CALLS:-128" in launcher and "CODEX_CLAUDE_STAGE_MAX_PARENT_TOOL_CALLS:-256" in launcher, "parent-tool fallback defaults missing")
     require("PostCompact" in launcher, "completed compactions are not observed")
     require("/bin/chmod 700 \"$runtime_dir\"" in launcher, "runtime directory mode missing")
     require("/bin/chmod 600 \"$runtime_prompt\"" in launcher, "prompt snapshot mode missing")
@@ -245,6 +263,16 @@ def main() -> int:
     assign = read(SKILL / "scripts/assign-worker.zsh")
     require("CODEX_CLAUDE_MAX_BUSY_WORKERS:-2" in assign and "CLAUDE_ASSIGN_CAPACITY_BUSY" in assign, "busy admission default missing")
     require("CLAUDE_ASSIGN_DUPLICATE_ACTIVE" in assign and "CLAUDE_ASSIGN_ROOT_BUSY" in assign, "assignment conflict handling missing")
+    require(
+        assign.index('/bin/mv -- "$health_assignment_tmp" "$health_dir/assignment.json"')
+        < assign.index('/bin/mv -- "$assignment_tmp" "$assignment_record"'),
+        "write assignment is published before stage-health baseline",
+    )
+    require(
+        stage_guard_text.index('write_scalar "$health/max_cache_read_input_tokens"')
+        < stage_guard_text.index('write_scalar "$health/transcript_cursor_bytes"'),
+        "transcript cursor can advance before cache maximum is durable",
+    )
     require("cco_terminalize_assignment" in rotate and "cco_terminalize_assignment" in retire, "lifecycle assignment release missing")
     require(
         "cco_scope_overlaps" not in runtime,
@@ -268,7 +296,7 @@ def main() -> int:
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")
-    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3"' in runtime, "durable legacy/current schema support missing")
+    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4"' in runtime, "durable legacy/current schema support missing")
     require("pgrep" not in toggle and "pkill" not in toggle, "toggle contains a broad process-name matcher")
 
     live_check = retire.index("CLAUDE_RETIRE_WORKER_STILL_LIVE")

@@ -76,6 +76,7 @@ def main() -> int:
         require(marker in skill_text, f"Codex-owned repository trust policy missing: {marker}")
 
     launcher = read(SKILL / "scripts/launch-worker.zsh")
+    stage_guard_text = read(SKILL / "scripts/worker-stage-guard.zsh")
     runtime = read(SKILL / "scripts/runtime-lib.zsh")
     rotate = read(SKILL / "scripts/rotate-worker.zsh")
     retire = read(SKILL / "scripts/retire-native-fallback.zsh")
@@ -151,6 +152,8 @@ def main() -> int:
     require("choose the method" in worker_prompt.casefold(), "worker prompt does not grant method choice")
     require("launcher enforces their roles and models" in worker_prompt, "runtime routing boundary missing")
     require("CodeIndexer is optional" in worker_prompt and "verify material indexed findings in source" in worker_prompt, "lean CodeIndexer contract missing")
+    require("roles are routes, not a mandatory pipeline" in worker_prompt.casefold(), "optional proactive role topology missing")
+    require("checkpoint neither" in worker_prompt and "transfers custody" in worker_prompt, "checkpoint authority boundary missing")
     require(len(worker_prompt.split()) <= 290, "worker prompt is no longer lean")
     assignment_headings = (
         "Outcome", "Done when", "Boundaries", "Authoritative context",
@@ -204,8 +207,8 @@ def main() -> int:
     require('--mcp-config "$runtime_mcp"' in launcher, "pinned CodeIndexer MCP snapshot is not injected")
     require('mcp_args=(--mcp-config "$runtime_mcp")' in launcher, "MCP snapshot is not schema-scoped")
 
-    require("runtime_schema_version" in launcher and 'print -r -- "4"' in launcher, "runtime schema-4 pin missing")
-    require('print -r -- "0.3.1" > "$registration/runtime_version"' in launcher, "runtime schema-4 version drift")
+    require("runtime_schema_version" in launcher and 'print -r -- "5"' in launcher, "runtime schema-5 pin missing")
+    require('print -r -- "0.3.2" > "$registration/runtime_version"' in launcher, "runtime schema-5 version drift")
     for snapshot in (
         "worker-agents.json",
         "worker-system-prompt.txt",
@@ -213,6 +216,8 @@ def main() -> int:
         "worker-agent-router.zsh",
         "worker-compaction-counter.zsh",
         "worker-codeindexer-guard.zsh",
+        "worker-stage-guard.zsh",
+        "health/policy.json",
         "codeindexer-mcp.json",
         "worker-settings.json",
     ):
@@ -222,6 +227,11 @@ def main() -> int:
     require("$runtime_agent_router" in launcher, "generated settings do not pin router snapshot")
     require("$runtime_compaction_counter" in launcher, "generated settings do not pin PostCompact observer")
     require("$runtime_codeindexer_guard" in launcher, "generated settings do not pin CodeIndexer guard")
+    require("$runtime_stage_guard" in launcher and 'matcher: "*"' in launcher, "parent-stage guard is not first PreToolUse hook")
+    require("CODEX_CLAUDE_STAGE_WARN_REQUESTS:-32" in launcher and "CODEX_CLAUDE_STAGE_MAX_REQUESTS:-64" in launcher, "request policy defaults missing")
+    require("CODEX_CLAUDE_STAGE_WARN_CACHE_READ_TOKENS:-131072" in launcher and "CODEX_CLAUDE_STAGE_MAX_CACHE_READ_TOKENS:-262144" in launcher, "cache policy defaults missing")
+    require("CODEX_CLAUDE_STAGE_WARN_SECONDS:-600" in launcher and "CODEX_CLAUDE_STAGE_MAX_SECONDS:-1200" in launcher, "elapsed policy defaults missing")
+    require("CODEX_CLAUDE_STAGE_WARN_PARENT_TOOL_CALLS:-128" in launcher and "CODEX_CLAUDE_STAGE_MAX_PARENT_TOOL_CALLS:-256" in launcher, "parent-tool fallback defaults missing")
     require("PostCompact" in launcher, "completed compactions are not observed")
     require("/bin/chmod 700 \"$runtime_dir\"" in launcher, "runtime directory mode missing")
     require("/bin/chmod 600 \"$runtime_prompt\"" in launcher, "prompt snapshot mode missing")
@@ -237,6 +247,8 @@ def main() -> int:
     assign = read(SKILL / "scripts/assign-worker.zsh")
     require("CODEX_CLAUDE_MAX_BUSY_WORKERS:-2" in assign and "CLAUDE_ASSIGN_CAPACITY_BUSY" in assign, "busy admission default missing")
     require("CLAUDE_ASSIGN_DUPLICATE_ACTIVE" in assign and "CLAUDE_ASSIGN_ROOT_BUSY" in assign, "assignment conflict handling missing")
+    require(assign.index('/bin/mv -- "$health_assignment_tmp" "$health_dir/assignment.json"') < assign.index('/bin/mv -- "$assignment_tmp" "$assignment_record"'), "write assignment is published before stage-health baseline")
+    require(stage_guard_text.index('write_scalar "$health/max_cache_read_input_tokens"') < stage_guard_text.index('write_scalar "$health/transcript_cursor_bytes"'), "transcript cursor can advance before cache maximum is durable")
     require("cco_terminalize_assignment" in rotate and "cco_terminalize_assignment" in retire, "lifecycle assignment release missing")
     require(
         "CLAUDE_CWD_CONFLICT" not in launcher and "comm=" not in launcher,
@@ -255,7 +267,7 @@ def main() -> int:
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")
-    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4"' in runtime, "durable legacy/current schema support missing")
+    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5"' in runtime, "durable legacy/current schema support missing")
     require("pgrep" not in toggle and "pkill" not in toggle, "toggle contains a broad process-name matcher")
 
     live_check = retire.index("CLAUDE_RETIRE_WORKER_STILL_LIVE")

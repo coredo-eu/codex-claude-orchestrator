@@ -49,12 +49,14 @@ subagent_hook="$script_dir/worker-subagent-contract.zsh"
 agent_router="$script_dir/worker-agent-router.zsh"
 compaction_counter="$script_dir/worker-compaction-counter.zsh"
 codeindexer_guard="$script_dir/worker-codeindexer-guard.zsh"
+stage_guard="$script_dir/worker-stage-guard.zsh"
 [[ -r "$prompt_file" ]] || cco_die 66 "WORKER_PROMPT_MISSING: $prompt_file"
 [[ -r "$agents_file" ]] || cco_die 66 "WORKER_AGENTS_MISSING: $agents_file"
 [[ -x "$subagent_hook" ]] || cco_die 66 "WORKER_SUBAGENT_HOOK_MISSING: $subagent_hook"
 [[ -x "$agent_router" ]] || cco_die 66 "WORKER_AGENT_ROUTER_MISSING: $agent_router"
 [[ -x "$compaction_counter" ]] || cco_die 66 "WORKER_COMPACTION_COUNTER_MISSING: $compaction_counter"
 [[ -x "$codeindexer_guard" ]] || cco_die 66 "WORKER_CODEINDEXER_GUARD_MISSING: $codeindexer_guard"
+[[ -x "$stage_guard" ]] || cco_die 66 "WORKER_STAGE_GUARD_MISSING: $stage_guard"
 
 worker_mcp_json=""
 if [[ "$mode" == "new" ]]; then
@@ -72,8 +74,25 @@ parent_model=${CODEX_CLAUDE_PARENT_MODEL:-claude-sonnet-5}
 parent_effort=${CODEX_CLAUDE_PARENT_EFFORT:-high}
 parent_route_class=${CODEX_CLAUDE_PARENT_ROUTE_CLASS:-ordinary}
 parent_route_reason=${CODEX_CLAUDE_PARENT_ROUTE_REASON:-bounded_local_outcome}
-runtime_schema="4"
+runtime_schema="5"
 legacy_subagent_model=""
+stage_warn_requests=${CODEX_CLAUDE_STAGE_WARN_REQUESTS:-32}
+stage_max_requests=${CODEX_CLAUDE_STAGE_MAX_REQUESTS:-64}
+stage_warn_parent_calls=${CODEX_CLAUDE_STAGE_WARN_PARENT_TOOL_CALLS:-128}
+stage_max_parent_calls=${CODEX_CLAUDE_STAGE_MAX_PARENT_TOOL_CALLS:-256}
+stage_warn_cache_read=${CODEX_CLAUDE_STAGE_WARN_CACHE_READ_TOKENS:-131072}
+stage_max_cache_read=${CODEX_CLAUDE_STAGE_MAX_CACHE_READ_TOKENS:-262144}
+stage_warn_elapsed=${CODEX_CLAUDE_STAGE_WARN_SECONDS:-600}
+stage_max_elapsed=${CODEX_CLAUDE_STAGE_MAX_SECONDS:-1200}
+if [[ "$mode" == "new" ]]; then
+  for stage_value in "$stage_warn_requests" "$stage_max_requests" "$stage_warn_cache_read" "$stage_max_cache_read" "$stage_warn_elapsed" "$stage_max_elapsed" "$stage_warn_parent_calls" "$stage_max_parent_calls"; do
+    [[ "$stage_value" == <-> ]] || cco_die 64 "INVALID_STAGE_HEALTH_POLICY"
+  done
+  (( stage_max_requests == 0 || stage_warn_requests < stage_max_requests )) || cco_die 64 "INVALID_STAGE_HEALTH_POLICY"
+  (( stage_max_cache_read == 0 || stage_warn_cache_read < stage_max_cache_read )) || cco_die 64 "INVALID_STAGE_HEALTH_POLICY"
+  (( stage_max_elapsed == 0 || stage_warn_elapsed < stage_max_elapsed )) || cco_die 64 "INVALID_STAGE_HEALTH_POLICY"
+  (( stage_max_parent_calls > 0 && stage_warn_parent_calls < stage_max_parent_calls )) || cco_die 64 "INVALID_STAGE_HEALTH_POLICY"
+fi
 
 if [[ "$mode" == "new" ]]; then
   if command -v uuidgen >/dev/null 2>&1; then
@@ -148,10 +167,19 @@ if [[ "$mode" == "resume" ]]; then
     2)
       required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh)
       ;;
-    3|4)
+    3|4|5)
       required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh runtime/worker-compaction-counter.zsh)
       if [[ "$runtime_schema" == "4" ]]; then
         required_snapshots+=(runtime/worker-codeindexer-guard.zsh runtime/codeindexer-mcp.json)
+      elif [[ "$runtime_schema" == "5" ]]; then
+        required_snapshots+=(runtime/worker-codeindexer-guard.zsh runtime/codeindexer-mcp.json runtime/worker-stage-guard.zsh)
+        required_health=(health_schema_version policy.json assignment.json parent_tool_calls agent_calls transcript_cursor_bytes max_cache_read_input_tokens request_keys.log warning_emitted)
+        [[ -d "$registration/health" && ! -L "$registration/health" ]] || \
+          cco_die 77 "CLAUDE_RESUME_STAGE_HEALTH_INVALID: uuid=$session_uuid"
+        for health_file in "${required_health[@]}"; do
+          [[ -f "$registration/health/$health_file" && ! -L "$registration/health/$health_file" ]] || \
+            cco_die 77 "CLAUDE_RESUME_STAGE_HEALTH_INVALID: uuid=$session_uuid missing=$health_file"
+        done
       fi
       lineage_kind_file="$registration/lineage_kind"
       [[ -f "$lineage_kind_file" && ! -L "$lineage_kind_file" ]] || \
@@ -287,8 +315,8 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$worker_name" > "$registration/name"
   print -r -- "$worker_group" > "$registration/process_group"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$registration/created_at"
-  print -r -- "4" > "$registration/runtime_schema_version"
-  print -r -- "0.3.1" > "$registration/runtime_version"
+  print -r -- "5" > "$registration/runtime_schema_version"
+  print -r -- "0.3.2" > "$registration/runtime_version"
   print -r -- "$lineage_kind" > "$registration/lineage_kind"
   print -r -- "$parent_route_class" > "$registration/parent_route_class"
   print -r -- "$parent_route_reason" > "$registration/parent_route_reason"
@@ -302,6 +330,18 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "0" > "$registration/context/acknowledged_compactions"
   /bin/chmod 700 "$registration/context"
   /bin/chmod 600 "$registration/context/"*
+  /bin/mkdir -- "$registration/health"
+  print -r -- "1" > "$registration/health/health_schema_version"
+  "$CCO_JQ" -cn --argjson warn_requests "$stage_warn_requests" --argjson max_requests "$stage_max_requests" --argjson warn_parent_calls "$stage_warn_parent_calls" --argjson max_parent_calls "$stage_max_parent_calls" --argjson warn_cache "$stage_warn_cache_read" --argjson max_cache "$stage_max_cache_read" --argjson warn_seconds "$stage_warn_elapsed" --argjson max_seconds "$stage_max_elapsed" '{schema_version:1,warn_requests:$warn_requests,max_requests:$max_requests,warn_parent_tool_calls:$warn_parent_calls,max_parent_tool_calls:$max_parent_calls,warn_cache_read_input_tokens:$warn_cache,max_cache_read_input_tokens:$max_cache,warn_elapsed_seconds:$warn_seconds,max_elapsed_seconds:$max_seconds}' > "$registration/health/policy.json"
+  "$CCO_JQ" -cn '{schema_version:1,assigned_at_epoch:0,task_id:null}' > "$registration/health/assignment.json"
+  print -r -- "0" > "$registration/health/parent_tool_calls"
+  print -r -- "0" > "$registration/health/agent_calls"
+  print -r -- "0" > "$registration/health/transcript_cursor_bytes"
+  print -r -- "0" > "$registration/health/max_cache_read_input_tokens"
+  : > "$registration/health/request_keys.log"
+  print -r -- "0" > "$registration/health/warning_emitted"
+  /bin/chmod 700 "$registration/health"
+  /bin/chmod 600 "$registration/health/"*
 else
   process_group_tmp=$(mktemp "$registration/.process-group.XXXXXX")
   print -r -- "$worker_group" > "$process_group_tmp"
@@ -316,12 +356,14 @@ runtime_hook="$runtime_dir/worker-subagent-contract.zsh"
 runtime_agent_router="$runtime_dir/worker-agent-router.zsh"
 runtime_compaction_counter="$runtime_dir/worker-compaction-counter.zsh"
 runtime_codeindexer_guard="$runtime_dir/worker-codeindexer-guard.zsh"
+runtime_stage_guard="$runtime_dir/worker-stage-guard.zsh"
 runtime_mcp="$runtime_dir/codeindexer-mcp.json"
 runtime_settings="$runtime_dir/worker-settings.json"
 runtime_agents="$runtime_dir/worker-agents.json"
 registration_context_dir="$registration/context"
 compaction_command="${(q)zsh_bin} ${(q)runtime_compaction_counter} ${(q)registration_context_dir}"
 codeindexer_command="${(q)zsh_bin} ${(q)runtime_codeindexer_guard}"
+stage_command="${(q)zsh_bin} ${(q)runtime_stage_guard} ${(q)registration}"
 settings_tmp=""
 cleanup_runtime_tmp() {
   [[ -n "${settings_tmp:-}" && -e "$settings_tmp" ]] && /bin/rm -f -- "$settings_tmp"
@@ -338,6 +380,7 @@ if [[ "$mode" == "new" ]]; then
   /bin/cp -- "$agent_router" "$runtime_agent_router"
   /bin/cp -- "$compaction_counter" "$runtime_compaction_counter"
   /bin/cp -- "$codeindexer_guard" "$runtime_codeindexer_guard"
+  /bin/cp -- "$stage_guard" "$runtime_stage_guard"
   print -r -- "$worker_mcp_json" > "$runtime_mcp"
   /bin/chmod 600 "$runtime_prompt"
   /bin/chmod 600 "$runtime_agents"
@@ -345,6 +388,7 @@ if [[ "$mode" == "new" ]]; then
   /bin/chmod 700 "$runtime_agent_router"
   /bin/chmod 700 "$runtime_compaction_counter"
   /bin/chmod 700 "$runtime_codeindexer_guard"
+  /bin/chmod 700 "$runtime_stage_guard"
   /bin/chmod 600 "$runtime_mcp"
   /bin/chmod 700 "$runtime_dir"
   hook_command="${(q)zsh_bin} ${(q)runtime_hook}"
@@ -355,6 +399,7 @@ if [[ "$mode" == "new" ]]; then
     --arg hook "$hook_command" \
     --arg router "$router_command" \
     --arg codeindexer "$codeindexer_command" \
+    --arg stage "$stage_command" \
     --arg compaction "$compaction_command" \
     --arg home "$CCO_HOME" \
     --arg root "$root" '
@@ -382,6 +427,10 @@ if [[ "$mode" == "new" ]]; then
     },
     hooks: {
       PreToolUse: [
+        {
+          matcher: "*",
+          hooks: [{type: "command", command: $stage, timeout: 5}]
+        },
         {
           matcher: "Agent",
           hooks: [{type: "command", command: $router, timeout: 5}]
@@ -484,7 +533,7 @@ else
   agent_models=$("$CCO_JQ" -cn --arg model "$legacy_subagent_model" '{"*":$model}')
 fi
 
-if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   pinned_compaction_command=$("$CCO_JQ" -er '
     .hooks.PostCompact
     | select(type == "array" and length == 1)
@@ -499,15 +548,15 @@ if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
     cco_die 66 "WORKER_COMPACTION_HOOK_INVALID: $runtime_settings"
 fi
 
-if [[ "$runtime_schema" == "4" ]]; then
+if [[ "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   [[ -x "$runtime_codeindexer_guard" ]] || \
     cco_die 66 "WORKER_CODEINDEXER_GUARD_INVALID: $runtime_codeindexer_guard"
   worker_mcp_json=$(cco_codeindexer_mcp_json "$runtime_mcp" 1) || \
     cco_die 66 "WORKER_MCP_CONFIG_INVALID: $runtime_mcp"
   pinned_codeindexer_command=$("$CCO_JQ" -er '
     .hooks.PreToolUse
-    | select(type == "array" and length == 2)
-    | .[1]
+    | select(type == "array" and length == (if .[0].matcher == "*" then 3 else 2 end))
+    | .[-1]
     | select(.matcher == "mcp__codeindexer__.*")
     | .hooks
     | select(type == "array" and length == 1)
@@ -518,6 +567,13 @@ if [[ "$runtime_schema" == "4" ]]; then
     cco_die 66 "WORKER_CODEINDEXER_HOOK_INVALID: $runtime_settings"
   [[ "$pinned_codeindexer_command" == "$codeindexer_command" ]] || \
     cco_die 66 "WORKER_CODEINDEXER_HOOK_INVALID: $runtime_settings"
+fi
+
+if [[ "$runtime_schema" == "5" ]]; then
+  [[ -x "$runtime_stage_guard" && -d "$registration/health" && ! -L "$registration/health" ]] || cco_die 66 "WORKER_STAGE_GUARD_INVALID"
+  "$CCO_JQ" -e 'type == "object" and .schema_version == 1 and all(.warn_requests,.max_requests,.warn_cache_read_input_tokens,.max_cache_read_input_tokens,.warn_elapsed_seconds,.max_elapsed_seconds,.warn_parent_tool_calls,.max_parent_tool_calls; type == "number" and floor == . and . >= 0) and (.max_requests == 0 or .warn_requests < .max_requests) and (.max_cache_read_input_tokens == 0 or .warn_cache_read_input_tokens < .max_cache_read_input_tokens) and (.max_elapsed_seconds == 0 or .warn_elapsed_seconds < .max_elapsed_seconds) and (.max_parent_tool_calls > 0 and .warn_parent_tool_calls < .max_parent_tool_calls)' "$registration/health/policy.json" >/dev/null 2>&1 || cco_die 66 "WORKER_STAGE_POLICY_INVALID"
+  pinned_stage_command=$("$CCO_JQ" -er '.hooks.PreToolUse | select(type == "array" and length == 3) | .[0] | select(.matcher == "*") | .hooks | select(type == "array" and length == 1) | .[0] | select(.type == "command" and .timeout == 5) | .command' "$runtime_settings" 2>/dev/null) || cco_die 66 "WORKER_STAGE_GUARD_HOOK_INVALID"
+  [[ "$pinned_stage_command" == "$stage_command" ]] || cco_die 66 "WORKER_STAGE_GUARD_HOOK_INVALID"
 fi
 
 deny_rules=(
@@ -564,7 +620,7 @@ session_args=(--session-id "$session_uuid")
 
 context_compactions=0
 context_acknowledged=0
-if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   context_counts=$(cco_context_counts "$registration") || \
     cco_die 70 "CLAUDE_CONTEXT_CORRUPT: uuid=$session_uuid"
   context_compactions="${context_counts%% *}"
@@ -580,6 +636,17 @@ else
   context_state="unobserved_legacy"
 fi
 
+stage_health_state="unobserved_legacy"
+stage_policy='null'
+if [[ "$runtime_schema" == "5" ]]; then
+  if [[ -f "$registration/health/checkpoint.json" && ! -L "$registration/health/checkpoint.json" ]]; then
+    stage_health_state="checkpoint"
+  else
+    stage_health_state="observed"
+  fi
+  stage_policy=$(<"$registration/health/policy.json")
+fi
+
 ready_json=$("$CCO_JQ" -cn \
   --arg uuid "$session_uuid" \
   --arg name "$worker_name" \
@@ -592,16 +659,19 @@ ready_json=$("$CCO_JQ" -cn \
   --arg parent_route_reason "$parent_route_reason" \
   --arg runtime_schema "$runtime_schema" \
   --arg context_state "$context_state" \
+  --arg stage_health_state "$stage_health_state" \
   --arg lineage_kind "$lineage_kind" \
   --arg predecessor_uuid "$predecessor_uuid" \
   --arg lineage_id "$lineage_id" \
   --argjson context_compactions "$context_compactions" \
   --argjson context_acknowledged "$context_acknowledged" \
+  --argjson stage_policy "$stage_policy" \
   --argjson agent_models "$agent_models" \
   '{uuid:$uuid,name:$name,root:$root,lease:$lease,mode:$mode,
     runtime_schema:$runtime_schema,parent_model:$parent_model,agent_models:$agent_models,
     context_state:$context_state,context_compactions:$context_compactions,
     context_acknowledged:$context_acknowledged,
+    stage_health_state:$stage_health_state,stage_health_policy:$stage_policy,
     lineage_kind:(if $lineage_kind == "" then null else $lineage_kind end),
     predecessor_session_uuid:(if $predecessor_uuid == "" then null else $predecessor_uuid end),
     lineage_id:(if $lineage_id == "" then null else $lineage_id end),
@@ -628,7 +698,7 @@ if [[ -n "$parent_effort" ]]; then
   effort_args=(--effort "$parent_effort")
 fi
 mcp_args=()
-[[ "$runtime_schema" != "4" ]] || mcp_args=(--mcp-config "$runtime_mcp")
+[[ "$runtime_schema" != "4" && "$runtime_schema" != "5" ]] || mcp_args=(--mcp-config "$runtime_mcp")
 
 exec /usr/bin/env \
   "${effort_env[@]}" \

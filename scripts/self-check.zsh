@@ -10,5 +10,6 @@ done
 
 python3 "$repo_root/tests/test_invariants.py"
 python3 "$repo_root/tests/test_runtime.py"
+python3 "$repo_root/tests/test_stage_guard.py"
 
 print -- "codex-claude-orchestrator self-check: PASS"

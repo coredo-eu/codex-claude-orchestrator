@@ -34,6 +34,7 @@ SETUP = SCRIPTS / "setup-native-agents.zsh"
 NATIVE_RUNNER = SCRIPTS / "run-native-agent.zsh"
 ROUTER = SCRIPTS / "worker-agent-router.zsh"
 CODEINDEXER_GUARD = SCRIPTS / "worker-codeindexer-guard.zsh"
+STAGE_GUARD = SCRIPTS / "worker-stage-guard.zsh"
 
 
 def require(condition: bool, message: str) -> None:
@@ -444,9 +445,11 @@ def main() -> int:
             "long-horizon": "xhigh",
         }
         require(
-            ready["runtime_schema"] == "4"
+            ready["runtime_schema"] == "5"
             and ready["context_state"] == "observed"
             and ready["context_compactions"] == 0
+            and ready["stage_health_state"] == "observed"
+            and ready["stage_health_policy"]["max_parent_tool_calls"] == 256
             and ready["lineage_kind"] == "standalone",
             f"new worker lifecycle marker drift: {ready}",
         )
@@ -528,21 +531,25 @@ def main() -> int:
         require(json.loads(agents_path.read_text(encoding="utf-8")) == agents, "Claude did not receive roster snapshot")
         registration_dir = runtime_dir.parent
         require(
-            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "4",
+            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "5",
             "schema file drift",
         )
         require(
-            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.3.1",
+            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.3.2",
             "runtime version drift",
         )
         hook_path = runtime_dir / "worker-subagent-contract.zsh"
         router_path = runtime_dir / "worker-agent-router.zsh"
         compaction_path = runtime_dir / "worker-compaction-counter.zsh"
         codeindexer_guard_path = runtime_dir / "worker-codeindexer-guard.zsh"
+        stage_guard_path = runtime_dir / "worker-stage-guard.zsh"
+        stage_policy_path = registration_dir / "health/policy.json"
         require(stat.S_IMODE(hook_path.stat().st_mode) == 0o700, "hook snapshot is not 0700")
         require(stat.S_IMODE(router_path.stat().st_mode) == 0o700, "router snapshot is not 0700")
         require(stat.S_IMODE(compaction_path.stat().st_mode) == 0o700, "compaction snapshot is not 0700")
         require(stat.S_IMODE(codeindexer_guard_path.stat().st_mode) == 0o700, "CodeIndexer guard is not 0700")
+        require(stat.S_IMODE(stage_guard_path.stat().st_mode) == 0o700, "stage guard is not 0700")
+        require(json.loads(stage_policy_path.read_text(encoding="utf-8"))["max_requests"] == 64, "stage policy defaults drift")
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         require(settings["permissions"].get("defaultMode") == "auto", "Claude parent auto mode drift")
         hook_command = settings["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
@@ -550,14 +557,17 @@ def main() -> int:
             shlex.split(hook_command) == [zsh, str(hook_path)],
             "settings hook is not pinned to the snapshot",
         )
-        router_config = settings["hooks"]["PreToolUse"][0]
+        stage_config = settings["hooks"]["PreToolUse"][0]
+        require(stage_config["matcher"] == "*", "stage guard matcher drift")
+        require(shlex.split(stage_config["hooks"][0]["command"])[0:2] == [zsh, str(stage_guard_path)], "stage guard is not pinned")
+        router_config = settings["hooks"]["PreToolUse"][1]
         require(router_config["matcher"] == "Agent", "router hook does not match Agent")
         router_command = router_config["hooks"][0]["command"]
         require(
             shlex.split(router_command) == [zsh, str(router_path)],
             "settings router is not pinned to the snapshot",
         )
-        codeindexer_config = settings["hooks"]["PreToolUse"][1]
+        codeindexer_config = settings["hooks"]["PreToolUse"][2]
         require(codeindexer_config["matcher"] == "mcp__codeindexer__.*", "CodeIndexer hook matcher drift")
         codeindexer_command = codeindexer_config["hooks"][0]["command"]
         require(
@@ -1127,7 +1137,7 @@ def main() -> int:
         require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
         require(resumed_observed["effort_level"] is None, "resume inherited a global effort override")
         require(
-            resumed_ready["runtime_schema"] == "4"
+            resumed_ready["runtime_schema"] == "5"
             and resumed_ready["context_state"] == "decision_required"
             and resumed_ready["context_compactions"] == 3,
             f"resume lifecycle state drift: {resumed_ready}",

@@ -425,7 +425,7 @@ handled without that classifier call under current Claude Code behavior.
 
 ### Persistent-parent context
 
-Claude Code remains the sole owner of context compaction. Runtime-schema-3/4
+Claude Code remains the sole owner of context compaction. Runtime schema 3 and newer
 workers use a `PostCompact` observer that appends one literal event marker and
 drains the hook payload without parsing, printing, or retaining
 `compact_summary`.
@@ -592,9 +592,16 @@ yourself before native writes. These are cooperative controls, not proof against
 a process deliberately detached from its group; after a crash, lost PTY, or
 ambiguous identity, stay read-only or use an isolated worktree.
 
-Version `0.3.1` adds schema 4 for the pinned read-only CodeIndexer profile on top
-of schema 3's content-free compaction observer and assignment checkpoint.
-Schema-3 resumes remain MCP-free and reuse their original snapshots. Schema-2
+Version `0.3.2` adds schema 5 with a parent-stage health checkpoint on top of
+schema 4's pinned read-only CodeIndexer profile and schema 3's content-free
+compaction observer. The checkpoint stores only private counters, request
+identifiers, usage numbers, timestamps, and reason codes. It warns once, then
+denies another parent tool at the snapshotted request/parent-tool/cache-read/
+elapsed envelope so the worker returns a handoff. The parent-tool bound remains
+active when transcript usage is delayed or unavailable. It never kills,
+retires, transfers custody, or declares the outer goal complete. Schema-4
+resumes preserve their CodeIndexer snapshot; schema-3 resumes remain MCP-free
+and reuse their original snapshots. Schema-2
 and schema-1 resumes likewise keep their original roster/model behavior and
 report context as `unobserved_legacy`; none is silently converted. Unversioned
 legacy registrations are not adopted.

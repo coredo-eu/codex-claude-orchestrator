@@ -16,7 +16,7 @@ Within that stage, run already-known independent read-only,
 program. Use `Promise.allSettled` when partial results remain useful and inspect
 every outcome; use `Promise.all` only when any failure invalidates the stage.
 Bound every nested output and the outer program output, and emit only compact
-evidence.
+evidence. Do not split otherwise batchable inspections across outer tool calls.
 
 After the batch, return to model judgment before choosing the next stage. Keep
 goal-control calls and state transitions, adaptive investigations,
@@ -25,6 +25,11 @@ mutations direct and sequential.
 
 A successful batch is not goal completion. Continue until the goal's actual
 verification criteria are satisfied.
+
+For Claude PTY observation, keep the kill-switch and retirement preflight plus
+the dependent poll sequential inside one `functions.exec` program. While a
+worker holds edit custody, do not duplicate that outcome in Codex; observation,
+unrelated work, and later independent verification remain available.
 
 ## Codex-to-Claude executor policy
 

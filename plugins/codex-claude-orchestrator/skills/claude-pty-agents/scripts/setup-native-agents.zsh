@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  print -u2 -- "usage: setup-native-agents.zsh [--target project|user] [--root <absolute-project-root>] [--model <model>] [--role-model <role=model>]... [--apply [--yes]]"
+  print -u2 -- "usage: setup-native-agents.zsh [--target project|user] [--root <absolute-project-root>] [--model <model>] [--role-model <role=model>]... [--add-missing] [--apply [--yes]]"
   exit 64
 }
 
@@ -11,10 +11,12 @@ root="$PWD"
 uniform_model=${CODEX_NATIVE_AGENT_MODEL:-}
 apply=0
 yes=0
-roles=(source_explorer mech_executor reviewer security_reviewer test_runner)
+add_missing=0
+roles=(source_explorer scout mech_executor reviewer security_reviewer test_runner)
 typeset -A default_models selected_models role_overrides
 default_models=(
   source_explorer gpt-5.6-luna
+  scout gpt-5.6-luna
   test_runner gpt-5.6-luna
   mech_executor gpt-5.6-terra
   reviewer gpt-5.6-terra
@@ -28,7 +30,7 @@ valid_model() {
 
 valid_role() {
   case "$1" in
-    source_explorer|mech_executor|reviewer|security_reviewer|test_runner) return 0 ;;
+    source_explorer|scout|mech_executor|reviewer|security_reviewer|test_runner) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -62,6 +64,10 @@ while (( $# > 0 )); do
       ;;
     --apply)
       apply=1
+      shift
+      ;;
+    --add-missing)
+      add_missing=1
       shift
       ;;
     --yes)
@@ -123,23 +129,36 @@ done
 print -- "Native Codex agent setup"
 print -- "  target: $target"
 print -- "  destination: $destination"
+typeset -a roles_to_install
+roles_to_install=()
+if [[ -e "$destination" || -L "$destination" ]]; then
+  [[ -d "$destination" && ! -L "$destination" ]] || {
+    print -u2 -- "UNSAFE_DESTINATION: $destination"
+    exit 73
+  }
+fi
 for role in "${roles[@]}"; do
-  print -- "  create: $destination/$role.toml (model=${selected_models[$role]})"
+  target_file="$destination/$role.toml"
+  if [[ -e "$target_file" || -L "$target_file" ]]; then
+    if (( add_missing == 1 )) && [[ -f "$target_file" && ! -L "$target_file" ]]; then
+      print -- "  keep: $target_file"
+    elif [[ -L "$target_file" || ! -f "$target_file" ]]; then
+      print -u2 -- "UNSAFE_COLLISION: $target_file"
+      exit 73
+    else
+      print -u2 -- "REFUSING_TO_OVERWRITE: $target_file"
+      exit 73
+    fi
+  else
+    roles_to_install+=("$role")
+    print -- "  create: $target_file (model=${selected_models[$role]})"
+  fi
 done
 
 if (( apply == 0 )); then
   print -- "DRY_RUN: no files written. Re-run with --apply to confirm interactively, or --apply --yes for explicit non-interactive consent."
   exit 0
 fi
-
-collisions=0
-for role in "${roles[@]}"; do
-  if [[ -e "$destination/$role.toml" || -L "$destination/$role.toml" ]]; then
-    print -u2 -- "REFUSING_TO_OVERWRITE: $destination/$role.toml"
-    collisions=$(( collisions + 1 ))
-  fi
-done
-(( collisions == 0 )) || exit 73
 
 if (( yes == 0 )); then
   [[ -t 0 ]] || {
@@ -182,21 +201,28 @@ trap 'cleanup_install; exit 143' TERM
 # Repeat the collision check while holding the destination lock. This closes the
 # race between two cooperative installers; the exclusive link below also
 # protects against non-cooperating writers.
+roles_to_install=()
 for role in "${roles[@]}"; do
-  if [[ -e "$destination/$role.toml" || -L "$destination/$role.toml" ]]; then
-    print -u2 -- "REFUSING_TO_OVERWRITE: $destination/$role.toml"
+  target_file="$destination/$role.toml"
+  if [[ -L "$target_file" || ( -e "$target_file" && ! -f "$target_file" ) ]]; then
+    print -u2 -- "UNSAFE_COLLISION: $target_file"
     exit 73
+  elif [[ -f "$target_file" && $add_missing -eq 0 ]]; then
+    print -u2 -- "REFUSING_TO_OVERWRITE: $target_file"
+    exit 73
+  elif [[ ! -e "$target_file" ]]; then
+    roles_to_install+=("$role")
   fi
 done
 
-for role in "${roles[@]}"; do
+for role in "${roles_to_install[@]}"; do
   tmp=$(mktemp "$destination/.$role.toml.XXXXXX")
   staged_files+=("$tmp")
   sed "s/@MODEL@/${selected_models[$role]}/g" "$template_dir/$role.toml.in" > "$tmp"
   /bin/chmod 600 "$tmp"
 done
 
-for role in "${roles[@]}"; do
+for role in "${roles_to_install[@]}"; do
   tmp="${staged_files[1]}"
   # link(2) creates the destination atomically and fails for every existing
   # directory entry, including a dangling symlink. Unlike mv, it cannot replace
@@ -210,4 +236,4 @@ for role in "${roles[@]}"; do
 done
 cleanup_install
 trap - EXIT HUP INT TERM
-print -- "Installed ${#roles} native Codex role files. Existing files were not overwritten."
+print -- "Installed ${#roles_to_install} native Codex role files. Existing files were not overwritten."

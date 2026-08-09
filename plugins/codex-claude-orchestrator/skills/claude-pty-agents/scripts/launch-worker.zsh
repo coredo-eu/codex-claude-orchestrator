@@ -73,7 +73,7 @@ stage_warn_cache=${CODEX_CLAUDE_STAGE_WARN_CACHE_READ_TOKENS:-131072}
 stage_max_cache=${CODEX_CLAUDE_STAGE_MAX_CACHE_READ_TOKENS:-262144}
 stage_warn_seconds=${CODEX_CLAUDE_STAGE_WARN_SECONDS:-600}
 stage_max_seconds=${CODEX_CLAUDE_STAGE_MAX_SECONDS:-1200}
-runtime_schema="4"
+runtime_schema="5"
 legacy_subagent_model=""
 
 if [[ "$mode" == "new" ]]; then
@@ -160,11 +160,12 @@ if [[ "$mode" == "resume" ]]; then
     2)
       required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh)
       ;;
-    3|4)
+    3|4|5)
       required_snapshots=(parent_model runtime/worker-agents.json runtime/worker-settings.json runtime/worker-system-prompt.txt runtime/worker-subagent-contract.zsh runtime/worker-agent-router.zsh runtime/worker-compaction-counter.zsh)
-      if [[ "$runtime_schema" == "4" ]]; then
+      if [[ "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
         required_snapshots+=(runtime/worker-stage-guard.zsh)
         required_health=(health_schema_version policy.json assignment.json parent_tool_calls agent_calls transcript_cursor_bytes max_cache_read_input_tokens request_keys.log warning_emitted)
+        [[ "$runtime_schema" == "5" ]] && required_health+=(agent_calls_by_role.json)
         [[ -d "$registration/health" && ! -L "$registration/health" ]] || \
           cco_die 77 "CLAUDE_RESUME_STAGE_HEALTH_INVALID: uuid=$session_uuid"
         for health_file in "${required_health[@]}"; do
@@ -314,7 +315,7 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$worker_name" > "$registration/name"
   print -r -- "$worker_group" > "$registration/process_group"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$registration/created_at"
-  print -r -- "4" > "$registration/runtime_schema_version"
+  print -r -- "5" > "$registration/runtime_schema_version"
   print -r -- "0.3.1" > "$registration/runtime_version"
   print -r -- "$lineage_kind" > "$registration/lineage_kind"
   print -r -- "$parent_route_class" > "$registration/parent_route_class"
@@ -349,6 +350,8 @@ if [[ "$mode" == "new" ]]; then
     > "$registration/health/assignment.json"
   print -r -- "0" > "$registration/health/parent_tool_calls"
   print -r -- "0" > "$registration/health/agent_calls"
+  "$CCO_JQ" -cn '{schema_version:1,calls:{explorer:0,"log-analyzer":0,"test-triager":0,scout:0,implementer:0,debugger:0,reviewer:0,"security-reviewer":0,"long-horizon":0}}' \
+    > "$registration/health/agent_calls_by_role.json"
   print -r -- "0" > "$registration/health/transcript_cursor_bytes"
   print -r -- "0" > "$registration/health/max_cache_read_input_tokens"
   : > "$registration/health/request_keys.log"
@@ -452,7 +455,7 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$parent_effort" > "$registration/parent_effort"
 fi
 
-if [[ "$runtime_schema" != "1" ]]; then
+if [[ "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
   "$CCO_JQ" -e '
     type == "object" and
     (keys | sort) == [
@@ -523,12 +526,88 @@ if [[ "$runtime_schema" != "1" ]]; then
   ' "$runtime_agents" >/dev/null || cco_die 66 "WORKER_AGENTS_INVALID: $runtime_agents"
   agents_json=$(<"$runtime_agents")
   agent_models=$("$CCO_JQ" -c 'with_entries(.value = .value.model)' "$runtime_agents")
+elif [[ "$runtime_schema" == "5" ]]; then
+  "$CCO_JQ" -e '
+    type == "object" and
+    (keys | sort) == [
+      "debugger", "explorer", "implementer", "log-analyzer",
+      "long-horizon", "reviewer", "scout", "security-reviewer", "test-triager"
+    ] and
+    (
+      (
+        .explorer.model == "claude-haiku-4-5-20251001" and
+        .["log-analyzer"].model == "claude-haiku-4-5-20251001" and
+        .["test-triager"].model == "claude-haiku-4-5-20251001" and
+        .scout.model == "claude-haiku-4-5-20251001" and
+        .implementer.model == "claude-sonnet-5" and
+        .debugger.model == "claude-sonnet-5" and
+        .reviewer.model == "claude-opus-5" and
+        .["security-reviewer"].model == "claude-opus-5" and
+        .["long-horizon"].model == "claude-fable-5" and
+        (.explorer | has("effort") | not) and
+        (.["log-analyzer"] | has("effort") | not) and
+        (.["test-triager"] | has("effort") | not) and
+        (.scout | has("effort") | not) and
+        .implementer.effort == "high" and
+        .debugger.effort == "xhigh" and
+        .reviewer.effort == "medium" and
+        .["security-reviewer"].effort == "xhigh" and
+        .["long-horizon"].effort == "xhigh"
+      ) or
+      (
+        .explorer.model == "haiku" and
+        .["log-analyzer"].model == "haiku" and
+        .["test-triager"].model == "haiku" and
+        .scout.model == "haiku" and
+        .implementer.model == "sonnet" and
+        .debugger.model == "sonnet" and
+        .reviewer.model == "opus" and
+        .["security-reviewer"].model == "opus" and
+        .["long-horizon"].model == "fable" and
+        (
+          (all(.[]; has("effort") | not)) or
+          (
+            (.explorer | has("effort") | not) and
+            (.["log-analyzer"] | has("effort") | not) and
+            (.["test-triager"] | has("effort") | not) and
+            (.scout | has("effort") | not) and
+            .implementer.effort == "high" and
+            .debugger.effort == "xhigh" and
+            .reviewer.effort == "high" and
+            .["security-reviewer"].effort == "xhigh" and
+            .["long-horizon"].effort == "xhigh"
+          )
+        )
+      )
+    ) and
+    .explorer.tools == ["Read", "Grep", "Glob", "Bash"] and
+    .["log-analyzer"].tools == ["Read", "Grep", "Glob", "Bash"] and
+    .["test-triager"].tools == ["Read", "Grep", "Glob", "Bash"] and
+    .scout.tools == ["Read", "Grep", "Glob", "Bash"] and
+    .implementer.tools == ["Read", "Grep", "Glob", "Edit", "Write", "Bash"] and
+    .debugger.tools == ["Read", "Grep", "Glob", "Bash"] and
+    .reviewer.tools == ["Read", "Grep", "Glob", "Bash"] and
+    .["security-reviewer"].tools == ["Read", "Grep", "Glob", "Bash"] and
+    .["long-horizon"].tools == ["Read", "Grep", "Glob", "Edit", "Write", "Bash"] and
+    all(to_entries[];
+      (.value.description | type) == "string" and
+      (.value.prompt | type) == "string" and
+      (if (.key == "implementer" or .key == "long-horizon") then
+        (.value | del(.effort) | keys | sort) == ["description", "model", "prompt", "tools"]
+      else
+        (.value | del(.effort) | keys | sort) == ["description", "model", "permissionMode", "prompt", "tools"] and
+        .value.permissionMode == "plan"
+      end)
+    )
+  ' "$runtime_agents" >/dev/null || cco_die 66 "WORKER_AGENTS_INVALID: $runtime_agents"
+  agents_json=$(<"$runtime_agents")
+  agent_models=$("$CCO_JQ" -c 'with_entries(.value = .value.model)' "$runtime_agents")
 else
   agents_json=""
   agent_models=$("$CCO_JQ" -cn --arg model "$legacy_subagent_model" '{"*":$model}')
 fi
 
-if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   pinned_compaction_command=$("$CCO_JQ" -er '
     .hooks.PostCompact
     | select(type == "array" and length == 1)
@@ -543,7 +622,7 @@ if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
     cco_die 66 "WORKER_COMPACTION_HOOK_INVALID: $runtime_settings"
 fi
 
-if [[ "$runtime_schema" == "4" ]]; then
+if [[ "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   pinned_stage_command=$("$CCO_JQ" -er '
     .hooks.PreToolUse
     | select(type == "array" and length == 2)
@@ -616,7 +695,7 @@ session_args=(--session-id "$session_uuid")
 
 context_compactions=0
 context_acknowledged=0
-if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   context_counts=$(cco_context_counts "$registration") || \
     cco_die 70 "CLAUDE_CONTEXT_CORRUPT: uuid=$session_uuid"
   context_compactions="${context_counts%% *}"
@@ -634,7 +713,7 @@ fi
 
 stage_health_state="unobserved_legacy"
 stage_policy='null'
-if [[ "$runtime_schema" == "4" ]]; then
+if [[ "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   if [[ -f "$registration/health/checkpoint.json" && ! -L "$registration/health/checkpoint.json" ]]; then
     stage_health_state="checkpoint"
   else

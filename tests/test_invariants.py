@@ -97,6 +97,7 @@ def main() -> int:
         "explorer": "claude-haiku-4-5-20251001",
         "log-analyzer": "claude-haiku-4-5-20251001",
         "test-triager": "claude-haiku-4-5-20251001",
+        "scout": "claude-haiku-4-5-20251001",
         "implementer": "claude-sonnet-5",
         "debugger": "claude-sonnet-5",
         "reviewer": "claude-opus-5",
@@ -107,6 +108,7 @@ def main() -> int:
         "explorer": None,
         "log-analyzer": None,
         "test-triager": None,
+        "scout": None,
         "implementer": "high",
         "debugger": "xhigh",
         "reviewer": "medium",
@@ -117,6 +119,7 @@ def main() -> int:
         "explorer": ["Read", "Grep", "Glob", "Bash"],
         "log-analyzer": ["Read", "Grep", "Glob", "Bash"],
         "test-triager": ["Read", "Grep", "Glob", "Bash"],
+        "scout": ["Read", "Grep", "Glob", "Bash"],
         "implementer": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
         "debugger": ["Read", "Grep", "Glob", "Bash"],
         "reviewer": ["Read", "Grep", "Glob", "Bash"],
@@ -136,7 +139,7 @@ def main() -> int:
         "Claude role tool map drift",
     )
     read_only_roles = {
-        "explorer", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
+        "explorer", "log-analyzer", "test-triager", "scout", "debugger", "reviewer", "security-reviewer"
     }
     require(
         {name for name, definition in agent_roster.items() if definition.get("permissionMode") == "plan"}
@@ -151,6 +154,21 @@ def main() -> int:
         for marker in ("Boundary:", "Return:", "Choose the method."):
             require(marker in prompt, f"Claude prompt contract missing {marker}: {name}")
         require(len(prompt.split()) <= 65, f"Claude prompt is no longer lean: {name}")
+    expected_descriptions = {
+        "explorer": "Use proactively for bounded file discovery, source search, and fact extraction when independent evidence or context isolation has net value.",
+        "log-analyzer": "Use proactively for classifying logs, build output, and test results when isolating noisy evidence has net value.",
+        "test-triager": "Use proactively for a read-only pass over test failures when an isolated causal assessment has net value.",
+        "scout": "Use proactively for bounded local operational reconnaissance: health, logs, queues, processes, disk state, and other read-only runtime facts.",
+        "implementer": "Use for ordinary bounded implementation only when isolated edit custody has net value and the parent transfers the sole edit scope.",
+        "debugger": "Use for multi-step diagnosis when isolated command output and reasoning have net value; do not edit source.",
+        "reviewer": "Use for independent review when a separate falsifying pass on regressions, architecture, or missing verification has net value.",
+        "security-reviewer": "Use for focused security, authorization, concurrency, privacy, and recovery review when independent adversarial evidence has net value.",
+        "long-horizon": "Use only after an explicit long-horizon route and explicit sole edit custody for an exceptionally large autonomous outcome; Fable is preferred and Opus is the availability fallback.",
+    }
+    require(
+        {role: agent_roster[role]["description"] for role in expected_descriptions} == expected_descriptions,
+        "Claude role descriptions lost their cost-aware semantic routing",
+    )
 
     worker_prompt = read(SKILL / "assets/worker-system-prompt.txt")
     require(worker_prompt.startswith("Outcome:"), "worker prompt is not outcome-first")
@@ -158,7 +176,8 @@ def main() -> int:
         require(heading in worker_prompt, f"worker prompt contract missing {heading}")
     require("choose the method" in worker_prompt.casefold(), "worker prompt does not grant method choice")
     require("launcher enforces their roles and models" in worker_prompt, "runtime routing boundary missing")
-    require("Use a listed role proactively" in worker_prompt, "outcome-selected proactive delegation missing")
+    require("Read-only Haiku roles may be chosen" in worker_prompt, "cost-aware proactive delegation missing")
+    require("Sonnet and Opus roles follow their specific descriptions" in worker_prompt, "expensive role routing is not bounded")
     require("Roles are routes, not a mandatory pipeline" in worker_prompt, "optional role topology missing")
     require("checkpoint neither" in worker_prompt and "transfers custody" in worker_prompt, "checkpoint authority boundary missing")
     require(len(worker_prompt.split()) <= 290, "worker prompt is no longer lean")
@@ -187,6 +206,7 @@ def main() -> int:
         "cache_read_input_tokens",
         "request_keys.log",
         "agent_id",
+        "agent_calls_by_role",
         "checkpoint.json",
         "This checkpoint is not outer-goal completion",
         "max_parent_tool_calls",
@@ -214,8 +234,8 @@ def main() -> int:
     require("--strict-mcp-config" in launcher, "external MCP configurations are not excluded")
     require("--mcp-config" not in launcher, "launcher must not inject an MCP configuration")
 
-    require("runtime_schema_version" in launcher and 'print -r -- "4"' in launcher, "runtime schema-4 pin missing")
-    require('print -r -- "0.3.1" > "$registration/runtime_version"' in launcher, "runtime schema-4 version drift")
+    require("runtime_schema_version" in launcher and 'print -r -- "5"' in launcher, "runtime schema-5 pin missing")
+    require('print -r -- "0.3.1" > "$registration/runtime_version"' in launcher, "runtime schema-5 version drift")
     for snapshot in (
         "worker-agents.json",
         "worker-system-prompt.txt",
@@ -287,6 +307,7 @@ def main() -> int:
         "durable leases must accept session keying and the legacy root keying",
     )
     require("cco_session_lease" in runtime, "session lease resolution missing")
+    require("--add-missing" in setup and "UNSAFE_COLLISION" in setup, "native additive update safety contract missing")
     require(
         "cco_session_lease" in launcher and "cco_session_lease" in read(SKILL / "scripts/assign-worker.zsh"),
         "launch and assignment do not resolve the same session lease",
@@ -296,7 +317,7 @@ def main() -> int:
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")
-    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4"' in runtime, "durable legacy/current schema support missing")
+    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5"' in runtime, "durable legacy/current schema support missing")
     require("pgrep" not in toggle and "pkill" not in toggle, "toggle contains a broad process-name matcher")
 
     live_check = retire.index("CLAUDE_RETIRE_WORKER_STILL_LIVE")
@@ -306,6 +327,7 @@ def main() -> int:
     require("ps -axo pid=" in runtime, "shared liveness proof lacks missing/stale-lease process scan")
     expected_native = {
         "source_explorer": ("gpt-5.6-luna", "medium"),
+        "scout": ("gpt-5.6-luna", "medium"),
         "test_runner": ("gpt-5.6-luna", "low"),
         "mech_executor": ("gpt-5.6-terra", "medium"),
         "reviewer": ("gpt-5.6-terra", "high"),
@@ -328,9 +350,14 @@ def main() -> int:
         instructions = re.search(r'developer_instructions = """\n(.*?)\n"""', template_text, re.DOTALL)
         require(instructions is not None and instructions.group(1).startswith("Outcome:"), f"native prompt not outcome-first: {role}")
         normalized_instructions = " ".join(instructions.group(1).split())
-        for marker in ("Boundary:", "Return", "Choose the method."):
-            require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
-        require(len(instructions.group(1).split()) <= 85, f"native prompt is no longer lean: {role}")
+        if role == "scout":
+            for marker in ("Boundaries:", "Done when:", "Choose"):
+                require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
+            require(len(instructions.group(1).split()) <= 100, f"native prompt is no longer lean: {role}")
+        else:
+            for marker in ("Boundary:", "Return", "Choose the method."):
+                require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
+            require(len(instructions.group(1).split()) <= 85, f"native prompt is no longer lean: {role}")
 
     for marker in (
         '--sandbox "$sandbox_mode"',
@@ -348,7 +375,7 @@ def main() -> int:
     ):
         require(marker in native_runner, f"isolated native launcher missing: {marker}")
     require(
-        'source_explorer|reviewer|security_reviewer)' in native_runner
+        'source_explorer|scout|reviewer|security_reviewer)' in native_runner
         and 'required_sandbox="read-only"' in native_runner,
         "read-only native role map drift",
     )

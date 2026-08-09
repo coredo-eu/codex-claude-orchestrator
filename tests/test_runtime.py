@@ -234,6 +234,7 @@ def main() -> int:
         "explorer": "claude-haiku-4-5-20251001",
         "log-analyzer": "claude-haiku-4-5-20251001",
         "test-triager": "claude-haiku-4-5-20251001",
+        "scout": "claude-haiku-4-5-20251001",
         "implementer": "claude-sonnet-5",
         "debugger": "claude-sonnet-5",
         "reviewer": "claude-opus-5",
@@ -330,6 +331,7 @@ def main() -> int:
             "explorer": "claude-haiku-4-5-20251001",
             "log-analyzer": "claude-haiku-4-5-20251001",
             "test-triager": "claude-haiku-4-5-20251001",
+            "scout": "claude-haiku-4-5-20251001",
             "implementer": "claude-sonnet-5",
             "debugger": "claude-sonnet-5",
             "reviewer": "claude-opus-5",
@@ -340,6 +342,7 @@ def main() -> int:
             "explorer": None,
             "log-analyzer": None,
             "test-triager": None,
+            "scout": None,
             "implementer": "high",
             "debugger": "xhigh",
             "reviewer": "medium",
@@ -347,7 +350,7 @@ def main() -> int:
             "long-horizon": "xhigh",
         }
         require(
-            ready["runtime_schema"] == "4"
+            ready["runtime_schema"] == "5"
             and ready["context_state"] == "observed"
             and ready["context_compactions"] == 0
             and ready["stage_health_state"] == "observed"
@@ -380,7 +383,7 @@ def main() -> int:
             "Claude CLI role effort map drift",
         )
         read_only_roles = (
-            "explorer", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
+            "explorer", "log-analyzer", "test-triager", "scout", "debugger", "reviewer", "security-reviewer"
         )
         require(
             all(agents[role]["tools"] == ["Read", "Grep", "Glob", "Bash"] for role in read_only_roles),
@@ -421,7 +424,7 @@ def main() -> int:
         require(json.loads(agents_path.read_text(encoding="utf-8")) == agents, "Claude did not receive roster snapshot")
         registration_dir = runtime_dir.parent
         require(
-            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "4",
+            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "5",
             "schema file drift",
         )
         require(
@@ -468,6 +471,24 @@ def main() -> int:
             require(stat.S_IMODE(path.stat().st_mode) == 0o600, f"context state is not 0600: {path.name}")
         health_dir = registration_dir / "health"
         require(stat.S_IMODE(health_dir.stat().st_mode) == 0o700, "health directory is not 0700")
+        require(
+            json.loads((health_dir / "agent_calls_by_role.json").read_text(encoding="utf-8"))
+            == {
+                "schema_version": 1,
+                "calls": {
+                    "explorer": 0,
+                    "log-analyzer": 0,
+                    "test-triager": 0,
+                    "scout": 0,
+                    "implementer": 0,
+                    "debugger": 0,
+                    "reviewer": 0,
+                    "security-reviewer": 0,
+                    "long-horizon": 0,
+                },
+            },
+            "per-role Agent counters drift",
+        )
         health_policy = json.loads((health_dir / "policy.json").read_text(encoding="utf-8"))
         require(
             health_policy
@@ -887,12 +908,19 @@ def main() -> int:
         os.killpg(worker.pid, signal.SIGTERM)
         wait_for_process_exit(child_pid)
 
-        # Published schema-2/3 sessions keep their alias-based model snapshots
-        # and reviewer effort on resume; only newly registered workers use the
-        # exact model-ID roster.
+        # A schema-4 registration predating per-role telemetry keeps its exact
+        # eight-role roster and resumes without agent_calls_by_role.json.
         parent_model_path = registration_dir / "parent_model"
         exact_parent_model = parent_model_path.read_text(encoding="utf-8")
         exact_agents_snapshot = agents_path.read_text(encoding="utf-8")
+        legacy_agents = {name: definition for name, definition in agents.items() if name != "scout"}
+        agents_path.write_text(json.dumps(legacy_agents, indent=2) + "\n", encoding="utf-8")
+        (registration_dir / "runtime_schema_version").write_text("4\n", encoding="utf-8")
+        (registration_dir / "health" / "agent_calls_by_role.json").unlink()
+
+        # Published schema-2/3/4 sessions keep their alias-based model snapshots
+        # and reviewer effort on resume; only schema-5 registrations use the
+        # exact current roster.
         alias_by_model = {
             "claude-haiku-4-5-20251001": "haiku",
             "claude-sonnet-5": "sonnet",
@@ -901,7 +929,7 @@ def main() -> int:
         }
         alias_agents = {
             name: {**definition, "model": alias_by_model[definition["model"]]}
-            for name, definition in agents.items()
+            for name, definition in legacy_agents.items()
         }
         alias_agents["reviewer"]["effort"] = "high"
         agents_path.write_text(json.dumps(alias_agents, indent=2) + "\n", encoding="utf-8")
@@ -925,6 +953,11 @@ def main() -> int:
             == {name: definition["model"] for name, definition in alias_agents.items()},
             "alias snapshot model roster drift",
         )
+        require(
+            "scout" not in alias_ready["agent_models"]
+            and not (registration_dir / "health" / "agent_calls_by_role.json").exists(),
+            "schema-4 resume required schema-5 role telemetry",
+        )
         wait_for(alias_record)
         alias_observed = json.loads(alias_record.read_text(encoding="utf-8"))
         require(option_value(alias_observed["argv"], "--model") == "opus", "alias parent snapshot drift")
@@ -936,7 +969,24 @@ def main() -> int:
         alias_worker.wait(timeout=5)
         os.close(alias_master)
 
-        agents_path.write_text(exact_agents_snapshot, encoding="utf-8")
+        tampered_legacy_agents = json.loads(json.dumps(alias_agents))
+        tampered_legacy_agents["reviewer"]["model"] = "unexpected-model"
+        agents_path.write_text(json.dumps(tampered_legacy_agents, indent=2) + "\n", encoding="utf-8")
+        tampered_legacy_env = env.copy()
+        tampered_legacy_env["FAKE_CLAUDE_RECORD"] = str(base / "tampered legacy roster record.json")
+        tampered_legacy_env.pop("FAKE_CLAUDE_CHILD_PID")
+        tampered_legacy, tampered_legacy_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--resume", worker_uuid], cwd=repo, env=tampered_legacy_env
+        )
+        tampered_legacy_output = read_pty(tampered_legacy, tampered_legacy_master, timeout=10)
+        tampered_legacy.wait(timeout=5)
+        os.close(tampered_legacy_master)
+        require(
+            tampered_legacy.returncode == 66 and "WORKER_AGENTS_INVALID" in tampered_legacy_output,
+            "schema-4 resume accepted a tampered legacy roster",
+        )
+
+        agents_path.write_text(json.dumps(legacy_agents, indent=2) + "\n", encoding="utf-8")
         parent_model_path.write_text(exact_parent_model, encoding="utf-8")
 
         wrong_thread_env = env.copy()
@@ -1010,8 +1060,8 @@ def main() -> int:
             and resumed_ready["context_compactions"] == 3,
             f"resume lifecycle state drift: {resumed_ready}",
         )
-        require(resumed_ready["agent_models"] == expected_agent_models, "resume model roster drift")
-        require(json.loads(option_value(resumed_argv, "--agents")) == agents, "resume ignored pinned roster snapshot")
+        require(resumed_ready["agent_models"] == {name: definition["model"] for name, definition in legacy_agents.items()}, "resume model roster drift")
+        require(json.loads(option_value(resumed_argv, "--agents")) == legacy_agents, "resume ignored pinned roster snapshot")
         require(Path(option_value(resumed_argv, "--settings")) == settings_path, "resume settings snapshot drift")
         require(
             Path(option_value(resumed_argv, "--append-system-prompt-file")) == prompt_path,
@@ -1400,6 +1450,7 @@ def main() -> int:
         require(dry_run.returncode == 0 and "DRY_RUN: no files written" in dry_run.stdout, "native setup dry run failed")
         expected_native_models = {
             "source_explorer": "gpt-5.6-luna",
+            "scout": "gpt-5.6-luna",
             "test_runner": "gpt-5.6-luna",
             "mech_executor": "gpt-5.6-terra",
             "reviewer": "gpt-5.6-terra",
@@ -1445,6 +1496,7 @@ def main() -> int:
             installed == [
                 "mech_executor.toml",
                 "reviewer.toml",
+                "scout.toml",
                 "security_reviewer.toml",
                 "source_explorer.toml",
                 "test_runner.toml",
@@ -1458,6 +1510,42 @@ def main() -> int:
             for path in agent_dir.glob("*.toml")
         }
         require(installed_native_models == expected_native_models, f"native default model map drift: {installed_native_models}")
+
+        # Additive updates preserve an old regular five-role installation and
+        # install only the newly introduced scout profile.
+        legacy_native_repo = base / "legacy native setup"
+        legacy_native_agents = legacy_native_repo / ".codex/agents"
+        legacy_native_agents.mkdir(parents=True)
+        for role in expected_native_models.keys() - {"scout"}:
+            (legacy_native_agents / f"{role}.toml").write_text(
+                f'name = "{role}"\nmodel = "preserved-old-model"\n', encoding="utf-8"
+            )
+        additive = subprocess.run(
+            [zsh, str(SETUP), "--target", "project", "--root", str(legacy_native_repo), "--add-missing", "--apply", "--yes"],
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(additive.returncode == 0 and "Installed 1 native Codex role files" in additive.stdout, f"additive native setup failed: {additive.stderr}")
+        require(
+            (legacy_native_agents / "scout.toml").exists()
+            and 'model = "gpt-5.6-luna"' in (legacy_native_agents / "scout.toml").read_text(encoding="utf-8")
+            and 'model = "preserved-old-model"' in (legacy_native_agents / "reviewer.toml").read_text(encoding="utf-8"),
+            "additive native setup did not preserve old roles or add scout",
+        )
+        (legacy_native_agents / "scout.toml").unlink()
+        (legacy_native_agents / "scout.toml").symlink_to("missing-target")
+        unsafe_additive = subprocess.run(
+            [zsh, str(SETUP), "--target", "project", "--root", str(legacy_native_repo), "--add-missing", "--apply", "--yes"],
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(unsafe_additive.returncode == 73 and "UNSAFE_COLLISION" in unsafe_additive.stderr, "additive setup accepted a symlink collision")
 
         trusted_applied = subprocess.run(
             [zsh, str(SETUP), "--target", "user", "--apply", "--yes"],
@@ -1527,6 +1615,23 @@ def main() -> int:
         )
         require(source_record["stdin"] == source_task, "native task did not remain stdin-only")
         require(source_task not in " ".join(source_argv), "native task leaked into process arguments")
+
+        isolated_scout = subprocess.run(
+            [zsh, str(NATIVE_RUNNER), "scout", str(repo)],
+            cwd=repo,
+            env=native_env,
+            input="inspect bounded local operational facts",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(isolated_scout.returncode == 0, f"isolated scout launch failed: {isolated_scout.stderr}")
+        scout_record = json.loads(codex_record.read_text(encoding="utf-8"))
+        require(
+            option_value(scout_record["argv"], "--sandbox") == "read-only"
+            and option_value(scout_record["argv"], "--model") == "gpt-5.6-luna",
+            "isolated scout route drift",
+        )
 
         isolated_writer = subprocess.run(
             [zsh, str(NATIVE_RUNNER), "mech_executor", str(repo)],
@@ -1620,7 +1725,7 @@ def main() -> int:
             check=False,
         )
         require(
-            symlink_collision.returncode == 73 and "REFUSING_TO_OVERWRITE" in symlink_collision.stderr,
+            symlink_collision.returncode == 73 and "UNSAFE_COLLISION" in symlink_collision.stderr,
             "native setup did not refuse a dangling symlink",
         )
         require(dangling.is_symlink() and os.readlink(dangling) == "missing-target.toml", "dangling symlink changed")
@@ -1655,7 +1760,7 @@ def main() -> int:
         require(outcomes.count(0) == 1 and all(code in (0, 73, 75) for code in outcomes), f"concurrent setup outcomes: {outcomes} {first_output} {second_output}")
         concurrent_agent_dir = concurrent_repo / ".codex/agents"
         concurrent_roles = sorted(concurrent_agent_dir.glob("*.toml"))
-        require(len(concurrent_roles) == 5, "concurrent setup left a partial role set")
+        require(len(concurrent_roles) == 6, "concurrent setup left a partial role set")
         installed_models = {
             re.search(r'^model = "([^"]+)"$', path.read_text(encoding="utf-8"), re.MULTILINE).group(1)
             for path in concurrent_roles

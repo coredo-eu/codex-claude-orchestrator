@@ -35,7 +35,7 @@ daemon, and no claim to be an operating-system sandbox.
   independently verifies the result. Claude is not forced onto every action.
 - **Claude keeps bounded context.** One PTY-backed Sonnet parent retains context
   only for its assigned stage; the outer goal and completion authority stay with Codex.
-- **Each model gets the work it fits.** Haiku searches and triages, Sonnet
+- **Each model gets the work it fits.** Haiku searches, scouts, and triages, Sonnet
   implements and debugs, Opus reviews and synthesizes, and Fable is reserved for
   exceptional long-horizon work.
 - **Native Codex roles are explicit.** GPT-5.6 Luna, Terra, and Sol are mapped to
@@ -142,11 +142,12 @@ source in both CLIs before relying on included plan usage.
    canonical root and the HOME-wide busy limit defaults to two.
 5. **The Sonnet parent owns execution.** It receives the task body through the PTY,
    never as a process argument, and chooses its own method.
-6. **Claude routes supporting packages.** Search and triage go to Haiku,
-   implementation and debugging to Sonnet, difficult review to Opus, and only
-   exceptional long-horizon work to Fable. The roster is used proactively when
-   isolation, independent evidence, or safe parallelism has net value; it is
-   not a mandatory pipeline.
+6. **Claude routes supporting packages.** Search, local operational reconnaissance,
+   and triage go to Haiku and may be selected proactively when their isolation
+   has expected net value after transfer and integration costs. Implementation
+   and debugging go to Sonnet, difficult review to Opus, and only explicitly
+   routed exceptional long-horizon work to Fable. These costlier routes require
+   their role-specific need; no role forms a mandatory pipeline.
 7. **The worker returns a compact handoff, then exits.** Codex proves the named
    process group dead and calls matching rotate or retire, which terminalizes the
    assignment. It reports changed artifacts,
@@ -185,17 +186,19 @@ selects the worker.
 | `explorer` | `claude-haiku-4-5-20251001` | not supported by Haiku | file search, source facts, bounded discovery |
 | `log-analyzer` | `claude-haiku-4-5-20251001` | not supported by Haiku | logs, test output, classification |
 | `test-triager` | `claude-haiku-4-5-20251001` | not supported by Haiku | first pass over failures |
+| `scout` | `claude-haiku-4-5-20251001` | not supported by Haiku | bounded read-only local operational reconnaissance |
 | `implementer` | `claude-sonnet-5` | `high` | ordinary bounded implementation |
 | `debugger` | `claude-sonnet-5` | `xhigh` | multi-step diagnosis without intended source edits |
 | `reviewer` | `claude-opus-5` | `medium` | complex regressions and architecture review |
 | `security-reviewer` | `claude-opus-5` | `xhigh` | security, authorization, privacy, and concurrency |
-| `long-horizon` | `claude-fable-5` | `xhigh` | exceptionally large autonomous outcomes only |
+| `long-horizon` | `claude-fable-5` | `xhigh` | exceptionally large autonomous outcomes only after explicit routing and custody |
 
 ### Optional native Codex fallback roles
 
 | Native role | Model | Reasoning effort | Intended work |
 | --- | --- | --- | --- |
 | `source_explorer` | `gpt-5.6-luna` | `medium` | direct read-only source discovery |
+| `scout` | `gpt-5.6-luna` | `medium` | read-only local operational reconnaissance |
 | `test_runner` | `gpt-5.6-luna` | `low` | bounded verification after edit custody returns |
 | `mech_executor` | `gpt-5.6-terra` | `medium` | sole owner of one bounded implementation |
 | `reviewer` | `gpt-5.6-terra` | `high` | correctness, regression, and evidence review |
@@ -426,9 +429,12 @@ SKILL_DIR=/absolute/path/to/installed/claude-pty-agents
 
 The default is dry-run. `--apply` asks for confirmation; `--apply --yes` is the
 explicit non-interactive form. A pre-existing target, including a dangling
-symlink, is refused. Final paths are created atomically without replacement; a
-concurrent late collision can leave an earlier role installed, but never
-overwrites the colliding entry. Choose `--target user` only when these roles
+symlink, is refused. To add newly bundled roles to an older installation, use
+`--add-missing --apply` (and optionally `--yes`): existing regular role files
+are kept untouched, while symlinks and non-regular collisions are rejected.
+Final paths are created atomically without replacement; a concurrent late
+collision can leave an earlier role installed, but never overwrites the
+colliding entry. Choose `--target user` only when these roles
 should be personal defaults across repositories. A uniform model can be
 selected with `--model` or `CODEX_NATIVE_AGENT_MODEL`. A repeatable
 `--role-model role=model` overrides one role and takes precedence over a
@@ -468,6 +474,7 @@ paths for the same outcome.
 The templates are:
 
 - `source_explorer` — read-only source reconstruction;
+- `scout` — read-only local operational reconnaissance;
 - `reviewer` — read-only correctness and regression review;
 - `security_reviewer` — read-only focused security review;
 - `mech_executor` — the sole bounded edit owner after explicit custody transfer;
@@ -558,16 +565,20 @@ cooperative controls, not proof against a process deliberately detached from its
 group; after a crash, lost PTY, or ambiguous identity, stay read-only or use an
 isolated worktree.
 
-Version `0.3.1` introduces runtime schema 4 for a parent-stage health checkpoint
-in addition to the schema-3 content-free compaction observer. The `PreToolUse`
-hook stores only private counters, request identifiers, usage numbers,
+Version `0.3.1` retains runtime schema 4 as the legacy parent-stage health
+checkpoint and introduces runtime schema 5 for new registrations. Schema 5 adds
+the current nine-role roster (including `scout`) and private per-role counters;
+schema 4 retains its pinned eight-role roster and does not require that counter.
+The `PreToolUse` hook stores only private aggregate and, for schema 5, per-role
+counters, request identifiers, usage numbers,
 timestamps, and reason codes. It warns once, then denies another parent tool at
 the snapshotted request/parent-tool/cache-read/elapsed envelope so the worker
 returns a handoff. The parent-tool bound remains enforceable when transcript
 usage is delayed or unavailable. It excludes subagent-internal tools and never kills, retires, transfers
 custody, or declares the outer goal complete. Transcript usage can lag, so its
 request/cache observations are best-effort; elapsed time remains independent.
-Schema-3 resumes preserve their original snapshot, while schema-2 resumes still
+Schema-4 resumes preserve their original stage-health contract and roster;
+schema-3 resumes preserve their original snapshot, while schema-2 resumes still
 reuse their original roster and settings snapshot, and schema-1 resumes keep
 their original single-subagent-model snapshot. All remain usable; schema 1/2
 report context as `unobserved_legacy`, and none is silently converted. Unversioned legacy
@@ -596,8 +607,9 @@ it is not a log-prevention or data-loss-prevention system.
 Designed to resist control of another principal's session and common authority
 drift:
 
-- session-keyed leases prevent two holders of one session and let unrelated
-  Codex-owned workers share a root without collision;
+- session-keyed leases deny a second launch for the same thread and root, while
+  idle workers from other threads may coexist in one root; active assignments
+  remain serialized by root;
 - current-thread registration prevents UUID-only resume and cross-thread
   assignment, rotation, or retirement;
 - resume, rotation, and retirement each prove the exact session is dead through

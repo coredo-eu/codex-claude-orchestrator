@@ -57,13 +57,14 @@ def run_guard(
     *,
     tool_name: str = "Read",
     agent_id: str | None = None,
+    agent_role: str = "explorer",
 ) -> subprocess.CompletedProcess[str]:
     payload: dict[str, object] = {
         "hook_event_name": "PreToolUse",
         "session_id": session_id,
         "transcript_path": str(transcript),
         "tool_name": tool_name,
-        "tool_input": {"file_path": "/fixture"},
+        "tool_input": {"subagent_type": agent_role} if tool_name == "Agent" else {"file_path": "/fixture"},
     }
     if agent_id is not None:
         payload["agent_id"] = agent_id
@@ -127,6 +128,23 @@ def main() -> int:
         ):
             (health / name).write_text("0\n", encoding="utf-8")
             (health / name).chmod(0o600)
+        write_json(
+            health / "agent_calls_by_role.json",
+            {
+                "schema_version": 1,
+                "calls": {
+                    "explorer": 0,
+                    "log-analyzer": 0,
+                    "test-triager": 0,
+                    "scout": 0,
+                    "implementer": 0,
+                    "debugger": 0,
+                    "reviewer": 0,
+                    "security-reviewer": 0,
+                    "long-horizon": 0,
+                },
+            },
+        )
         (health / "request_keys.log").touch(mode=0o600)
 
         sentinel = "PROMPT_CONTENT_MUST_NOT_PERSIST"
@@ -136,6 +154,16 @@ def main() -> int:
         healthy = run_guard(zsh, registration, transcript, session_id, home)
         require(healthy.returncode == 0 and healthy.stdout == "", f"healthy call was not transparent: {healthy}")
         require((health / "request_keys.log").read_text(encoding="utf-8") == "request-one\n", "duplicate request counted")
+
+        role_counter = health / "agent_calls_by_role.json"
+        missing_role_counter = health / "agent_calls_by_role.missing"
+        role_counter.rename(missing_role_counter)
+        missing_counter = run_guard(zsh, registration, transcript, session_id, home)
+        require(
+            json.loads(missing_counter.stdout)["hookSpecificOutput"].get("permissionDecision") == "deny",
+            "missing per-role counter failed open",
+        )
+        missing_role_counter.rename(role_counter)
 
         subagent = run_guard(
             zsh, registration, transcript, session_id, home, agent_id="agent-fixture"
@@ -150,6 +178,10 @@ def main() -> int:
         require("additionalContext" in warning_output, "warning lacks additionalContext")
         require("permissionDecision" not in warning_output, "warning silently approved or denied the tool")
         require((health / "agent_calls").read_text().strip() == "1", "parent Agent call was not counted")
+        require(
+            json.loads((health / "agent_calls_by_role.json").read_text(encoding="utf-8"))["calls"]["explorer"] == 1,
+            "parent Agent role was not counted",
+        )
 
         repeated = run_guard(zsh, registration, transcript, session_id, home)
         require(repeated.stdout == "", "one-time warning repeated")
@@ -182,6 +214,7 @@ def main() -> int:
         require(
             observation["requests"] == 3
             and observation["max_cache_read_input_tokens"] == 120
+            and observation["agent_calls_by_role"]["explorer"] == 1
             and observation["state"] == "checkpoint",
             f"content-free accounting drift: {observation}",
         )
@@ -219,6 +252,23 @@ def main() -> int:
         ):
             (fallback_health / name).write_text("0\n", encoding="utf-8")
             (fallback_health / name).chmod(0o600)
+        write_json(
+            fallback_health / "agent_calls_by_role.json",
+            {
+                "schema_version": 1,
+                "calls": {
+                    "explorer": 0,
+                    "log-analyzer": 0,
+                    "test-triager": 0,
+                    "scout": 0,
+                    "implementer": 0,
+                    "debugger": 0,
+                    "reviewer": 0,
+                    "security-reviewer": 0,
+                    "long-horizon": 0,
+                },
+            },
+        )
         (fallback_health / "request_keys.log").touch(mode=0o600)
         unavailable = run_guard(
             zsh,

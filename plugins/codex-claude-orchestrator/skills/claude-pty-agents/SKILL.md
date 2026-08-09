@@ -71,8 +71,9 @@ CODEX_CLAUDE_PARENT_ROUTE_REASON=independent_review
 ```
 
 The launcher passes a private session-scoped `--agents` roster. Explorer,
-log-analyzer, and test-triager use `claude-haiku-4-5-20251001`; implementer and
-debugger use `claude-sonnet-5`; reviewer and security-reviewer use
+log-analyzer, test-triager, and scout use `claude-haiku-4-5-20251001`; scout is
+for bounded read-only local operational reconnaissance. Implementer and debugger
+use `claude-sonnet-5`; reviewer and security-reviewer use
 `claude-opus-5`. Long-horizon uses `claude-fable-5`. The ordinary Sonnet parent
 starts at `high` effort. Haiku roles use the model's fixed behavior because Haiku 4.5 has
 no configurable effort; implementer uses `high`, reviewer uses `medium`, and
@@ -82,9 +83,13 @@ other availability failures, the parent retains
 the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted
 roles or mismatched model overrides. Read-only roles receive Bash in `plan`
 mode when the parent permission mode permits that override. The default parent
-uses this roster proactively when independent evidence, context isolation, or
-safe parallelism has net value. Roles are optional routes, not a mandatory
-pipeline, and no fixed task-size threshold replaces outcome judgment. The default parent
+may use the read-only Haiku roles proactively when independent evidence,
+context isolation, or safe parallelism has expected net value after transfer
+and integration costs. Sonnet and Opus roles are selected only when their
+specific descriptions justify that cost. Long-horizon is explicit-route-only
+and requires explicit sole edit custody. Roles are optional routes, not a
+mandatory pipeline, and no fixed task-size threshold replaces outcome judgment.
+The default parent
 starts in Claude Code Auto Mode to avoid manual approval queues; current Claude
 Code versions make subagents inherit parent Auto Mode, so their remaining
 read-only boundary is the role contract and absence of Edit/Write tools, not an
@@ -310,7 +315,10 @@ activation. Preview first:
 ```
 
 Use `--apply` for interactive confirmation or `--apply --yes` after reviewing
-the dry run. Existing role files are never overwritten. Defaults are
+the dry run. Existing role files are never overwritten. For an older
+installation, `--add-missing --apply` keeps existing regular profiles and adds
+only missing bundled roles (including `scout`); symlink and non-regular
+collisions are rejected. Defaults are
 role-specific:
 
 ```text

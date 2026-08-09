@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  print -u2 -- "usage: setup-native-agents.zsh [--target project|user] [--root <absolute-project-root>] [--model <model>] [--role-model <role=model>]... [--apply [--yes]]"
+  print -u2 -- "usage: setup-native-agents.zsh [--target project|user] [--root <absolute-project-root>] [--model <model>] [--role-model <role=model>]... [--add-missing] [--apply [--yes]]"
   exit 64
 }
 
@@ -11,10 +11,13 @@ root="$PWD"
 uniform_model=${CODEX_NATIVE_AGENT_MODEL:-}
 apply=0
 yes=0
-roles=(source_explorer mech_executor reviewer security_reviewer test_runner)
+add_missing=0
+roles=(source_explorer codeindexer_explorer scout mech_executor reviewer security_reviewer test_runner)
 typeset -A default_models selected_models role_overrides
 default_models=(
   source_explorer gpt-5.6-luna
+  codeindexer_explorer gpt-5.6-luna
+  scout gpt-5.6-luna
   test_runner gpt-5.6-luna
   mech_executor gpt-5.6-terra
   reviewer gpt-5.6-terra
@@ -28,7 +31,7 @@ valid_model() {
 
 valid_role() {
   case "$1" in
-    source_explorer|mech_executor|reviewer|security_reviewer|test_runner) return 0 ;;
+    source_explorer|codeindexer_explorer|scout|mech_executor|reviewer|security_reviewer|test_runner) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -62,6 +65,10 @@ while (( $# > 0 )); do
       ;;
     --apply)
       apply=1
+      shift
+      ;;
+    --add-missing)
+      add_missing=1
       shift
       ;;
     --yes)
@@ -123,8 +130,13 @@ done
 print -- "Native Codex agent setup"
 print -- "  target: $target"
 print -- "  destination: $destination"
+(( add_missing == 0 )) || print -- "  mode: add missing regular role files only"
 for role in "${roles[@]}"; do
-  print -- "  create: $destination/$role.toml (model=${selected_models[$role]})"
+  if (( add_missing == 1 )) && [[ -f "$destination/$role.toml" && ! -L "$destination/$role.toml" ]]; then
+    print -- "  keep: $destination/$role.toml"
+  else
+    print -- "  create: $destination/$role.toml (model=${selected_models[$role]})"
+  fi
 done
 
 if (( apply == 0 )); then
@@ -134,7 +146,13 @@ fi
 
 collisions=0
 for role in "${roles[@]}"; do
-  if [[ -e "$destination/$role.toml" || -L "$destination/$role.toml" ]]; then
+  if [[ -L "$destination/$role.toml" ]]; then
+    print -u2 -- "UNSAFE_COLLISION: $destination/$role.toml"
+    collisions=$(( collisions + 1 ))
+  elif [[ -e "$destination/$role.toml" && ! -f "$destination/$role.toml" ]]; then
+    print -u2 -- "UNSAFE_COLLISION: $destination/$role.toml"
+    collisions=$(( collisions + 1 ))
+  elif [[ -f "$destination/$role.toml" && $add_missing -eq 0 ]]; then
     print -u2 -- "REFUSING_TO_OVERWRITE: $destination/$role.toml"
     collisions=$(( collisions + 1 ))
   fi
@@ -155,7 +173,14 @@ if (( yes == 0 )); then
 fi
 
 umask 077
-/bin/mkdir -p -- "$destination"
+if [[ -e "$destination" || -L "$destination" ]]; then
+  [[ -d "$destination" && ! -L "$destination" ]] || {
+    print -u2 -- "UNSAFE_DESTINATION: $destination"
+    exit 73
+  }
+else
+  /bin/mkdir -p -- "$destination"
+fi
 install_lock="$destination/.codex-claude-orchestrator-install.lock"
 if ! /bin/mkdir -- "$install_lock" 2>/dev/null; then
   print -u2 -- "NATIVE_AGENT_SETUP_BUSY: $install_lock"
@@ -182,21 +207,28 @@ trap 'cleanup_install; exit 143' TERM
 # Repeat the collision check while holding the destination lock. This closes the
 # race between two cooperative installers; the exclusive link below also
 # protects against non-cooperating writers.
+typeset -a install_roles
+install_roles=()
 for role in "${roles[@]}"; do
-  if [[ -e "$destination/$role.toml" || -L "$destination/$role.toml" ]]; then
+  if [[ -L "$destination/$role.toml" || ( -e "$destination/$role.toml" && ! -f "$destination/$role.toml" ) ]]; then
+    print -u2 -- "UNSAFE_COLLISION: $destination/$role.toml"
+    exit 73
+  elif [[ -f "$destination/$role.toml" && $add_missing -eq 0 ]]; then
     print -u2 -- "REFUSING_TO_OVERWRITE: $destination/$role.toml"
     exit 73
+  elif [[ ! -e "$destination/$role.toml" ]]; then
+    install_roles+=("$role")
   fi
 done
 
-for role in "${roles[@]}"; do
+for role in "${install_roles[@]}"; do
   tmp=$(mktemp "$destination/.$role.toml.XXXXXX")
   staged_files+=("$tmp")
   sed "s/@MODEL@/${selected_models[$role]}/g" "$template_dir/$role.toml.in" > "$tmp"
   /bin/chmod 600 "$tmp"
 done
 
-for role in "${roles[@]}"; do
+for role in "${install_roles[@]}"; do
   tmp="${staged_files[1]}"
   # link(2) creates the destination atomically and fails for every existing
   # directory entry, including a dangling symlink. Unlike mv, it cannot replace
@@ -210,4 +242,4 @@ for role in "${roles[@]}"; do
 done
 cleanup_install
 trap - EXIT HUP INT TERM
-print -- "Installed ${#roles} native Codex role files. Existing files were not overwritten."
+print -- "Installed ${#install_roles} native Codex role files. Existing files were not overwritten."

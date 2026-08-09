@@ -43,6 +43,14 @@ write_scalar() {
   /bin/mv -- "$tmp" "$target" || { /bin/rm -f -- "$tmp"; return 1; }
 }
 
+write_json() {
+  local target="$1" value="$2" tmp
+  tmp=$(mktemp "${target:h}/.${target:t}.XXXXXX") || return 1
+  print -rn -- "$value" > "$tmp" || { /bin/rm -f -- "$tmp"; return 1; }
+  /bin/chmod 600 "$tmp" || { /bin/rm -f -- "$tmp"; return 1; }
+  /bin/mv -- "$tmp" "$target" || { /bin/rm -f -- "$tmp"; return 1; }
+}
+
 file_size() {
   local path="$1" observed
   observed=$(/usr/bin/stat -f '%z' "$path" 2>/dev/null) || \
@@ -61,7 +69,8 @@ event=$(
         session_id:(.session_id | select(type == "string")),
         transcript_path:(.transcript_path // "" | select(type == "string")),
         tool_name:(.tool_name | select(type == "string")),
-        agent_id:(.agent_id // "" | select(type == "string"))
+        agent_id:(.agent_id // "" | select(type == "string")),
+        agent_role:(if .tool_name == "Agent" then (.tool_input.subagent_type // "") else "" end | select(type == "string"))
       }
   ' 2>/dev/null
 ) || emit_deny
@@ -91,7 +100,7 @@ done
 trap 'cleanup' EXIT HUP INT TERM
 
 required_files=(
-  health_schema_version policy.json assignment.json parent_tool_calls agent_calls
+  health_schema_version policy.json assignment.json parent_tool_calls agent_calls agent_calls_by_role.json
   transcript_cursor_bytes max_cache_read_input_tokens request_keys.log warning_emitted
 )
 for file in "${required_files[@]}"; do
@@ -141,15 +150,32 @@ fi
 
 parent_calls=$(<"$health/parent_tool_calls")
 agent_calls=$(<"$health/agent_calls")
+agent_calls_by_role=$(<"$health/agent_calls_by_role.json")
 cursor=$(<"$health/transcript_cursor_bytes")
 max_cache=$(<"$health/max_cache_read_input_tokens")
 warning_emitted=$(<"$health/warning_emitted")
 [[ "$parent_calls" == <-> && "$agent_calls" == <-> && "$cursor" == <-> && \
    "$max_cache" == <-> && ( "$warning_emitted" == "0" || "$warning_emitted" == "1" ) ]] || emit_deny
+print -rn -- "$agent_calls_by_role" | "$jq_bin" -e '
+  type == "object" and .schema_version == 1 and
+  (keys | sort) == ["calls","schema_version"] and
+  (.calls | type == "object") and
+  (.calls | keys | sort) == ["codeindexer-explorer","debugger","explorer","implementer","log-analyzer","long-horizon","reviewer","scout","security-reviewer","test-triager"] and
+  all(.calls[]; type == "number" and floor == . and . >= 0)
+' >/dev/null 2>&1 || emit_deny
 
 (( parent_calls += 1 ))
 tool_name=$(print -rn -- "$event" | "$jq_bin" -r '.tool_name')
-[[ "$tool_name" != "Agent" ]] || (( agent_calls += 1 ))
+if [[ "$tool_name" == "Agent" ]]; then
+  (( agent_calls += 1 ))
+  agent_role=$(print -rn -- "$event" | "$jq_bin" -r '.agent_role')
+  case "$agent_role" in
+    explorer|log-analyzer|test-triager|scout|codeindexer-explorer|implementer|debugger|reviewer|security-reviewer|long-horizon)
+      agent_calls_by_role=$(print -rn -- "$agent_calls_by_role" | "$jq_bin" -ce --arg role "$agent_role" '.calls[$role] += 1') || emit_deny
+      write_json "$health/agent_calls_by_role.json" "$agent_calls_by_role" || emit_deny
+      ;;
+  esac
+fi
 write_scalar "$health/parent_tool_calls" "$parent_calls" || emit_deny
 write_scalar "$health/agent_calls" "$agent_calls" || emit_deny
 
@@ -238,12 +264,13 @@ observation_tmp=$(mktemp "$health/.last-observation.XXXXXX") || emit_deny
   --argjson observed_at_epoch "$now_epoch" --argjson assigned_at_epoch "$assigned_at" \
   --argjson elapsed_seconds "$elapsed" --argjson parent_tool_calls "$parent_calls" \
   --argjson agent_calls "$agent_calls" --argjson requests "$request_count" \
+  --argjson agent_calls_by_role "$(print -rn -- "$agent_calls_by_role" | "$jq_bin" -c '.calls')" \
   --argjson max_cache_read_input_tokens "$max_cache" \
   --argjson warning_reasons "$(printf '%s\n' "${warning_reasons[@]}" | "$jq_bin" -Rsc 'split("\n") | map(select(length > 0))')" \
   --argjson checkpoint_reasons "$(printf '%s\n' "${checkpoint_reasons[@]}" | "$jq_bin" -Rsc 'split("\n") | map(select(length > 0))')" \
   '{schema_version:1,task_id:$task_id,state:$state,transcript_state:$transcript_state,
     observed_at_epoch:$observed_at_epoch,assigned_at_epoch:$assigned_at_epoch,
-    elapsed_seconds:$elapsed_seconds,parent_tool_calls:$parent_tool_calls,agent_calls:$agent_calls,
+    elapsed_seconds:$elapsed_seconds,parent_tool_calls:$parent_tool_calls,agent_calls:$agent_calls,agent_calls_by_role:$agent_calls_by_role,
     requests:$requests,max_cache_read_input_tokens:$max_cache_read_input_tokens,
     warning_reasons:$warning_reasons,checkpoint_reasons:$checkpoint_reasons}' > "$observation_tmp" || emit_deny
 /bin/chmod 600 "$observation_tmp" && /bin/mv -- "$observation_tmp" "$health/last_observation.json" || emit_deny
@@ -260,7 +287,7 @@ fi
 
 if (( ${#warning_reasons[@]} > 0 && warning_emitted == 0 )); then
   write_scalar "$health/warning_emitted" "1" || emit_deny
-  emit_warning "Stage health warning (${(j:,:)warning_reasons}). Reassess the bounded stage and use a listed subagent proactively when independent evidence, context isolation, or safe parallelism has net value. No completion or custody transfer occurred."
+  emit_warning "Stage health warning (${(j:,:)warning_reasons}). Reassess the bounded stage; if independent evidence, context isolation, or safe parallelism has expected net value after transfer and integration costs, use the eligible role whose description matches. Long-horizon remains explicit-only. No completion or custody transfer occurred."
 fi
 
 cleanup

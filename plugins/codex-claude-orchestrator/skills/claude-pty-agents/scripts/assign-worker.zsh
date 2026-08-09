@@ -96,7 +96,7 @@ acknowledged=0
 context_state="observed"
 continuation_scope="none"
 
-if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
+if [[ "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" || "$runtime_schema" == "6" ]]; then
   counts=$(cco_context_counts "$registration") || \
     cco_die 70 "CLAUDE_ASSIGN_CONTEXT_CORRUPT: uuid=$session_uuid"
   events="${counts%% *}"
@@ -167,12 +167,15 @@ assigned_at_epoch=$(date +%s)
   > "$assignment_tmp" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
 health_assignment_tmp=""
 health_cursor_tmp=""
-if [[ "$runtime_schema" == "5" ]]; then
+if [[ "$runtime_schema" == "5" || "$runtime_schema" == "6" ]]; then
   health_dir="$registration/health"
   [[ -d "$health_dir" && ! -L "$health_dir" && ! -e "$health_dir/checkpoint.json" && ! -L "$health_dir/checkpoint.json" ]] || cco_die 77 "CLAUDE_ASSIGN_STAGE_CHECKPOINTED: uuid=$session_uuid"
   for health_file in health_schema_version policy.json assignment.json parent_tool_calls agent_calls transcript_cursor_bytes max_cache_read_input_tokens request_keys.log warning_emitted; do
     [[ -f "$health_dir/$health_file" && ! -L "$health_dir/$health_file" ]] || cco_die 70 "CLAUDE_ASSIGN_STAGE_HEALTH_CORRUPT: uuid=$session_uuid"
   done
+  if [[ "$runtime_schema" == "6" ]]; then
+    [[ -f "$health_dir/agent_calls_by_role.json" && ! -L "$health_dir/agent_calls_by_role.json" ]] || cco_die 70 "CLAUDE_ASSIGN_STAGE_HEALTH_CORRUPT: uuid=$session_uuid"
+  fi
   transcript_baseline=0
   transcript_candidates=("$CCO_HOME/.claude/projects"/**/"$session_uuid.jsonl"(N))
   if (( ${#transcript_candidates[@]} == 1 )) && [[ -f "$transcript_candidates[1]" && ! -L "$transcript_candidates[1]" ]]; then
@@ -186,7 +189,7 @@ if [[ "$runtime_schema" == "5" ]]; then
   print -r -- "$transcript_baseline" > "$health_cursor_tmp"
   /bin/chmod 600 "$health_cursor_tmp" || cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
 fi
-if [[ "$runtime_schema" == "5" ]]; then
+if [[ "$runtime_schema" == "5" || "$runtime_schema" == "6" ]]; then
   /bin/mv -- "$health_cursor_tmp" "$health_dir/transcript_cursor_bytes" && /bin/mv -- "$health_assignment_tmp" "$health_dir/assignment.json" || cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
 fi
 /bin/chmod 600 "$assignment_tmp" && /bin/mv -- "$assignment_tmp" "$assignment_record" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"

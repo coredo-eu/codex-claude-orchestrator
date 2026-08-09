@@ -54,7 +54,7 @@ role="$1"
 root="$2"
 
 case "$role" in
-  source_explorer|reviewer|security_reviewer)
+  source_explorer|codeindexer_explorer|scout|reviewer|security_reviewer)
     required_sandbox="read-only"
     ;;
   mech_executor|test_runner)

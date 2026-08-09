@@ -426,6 +426,8 @@ def main() -> int:
         require(ready["root"] == str(repo), "ready marker did not preserve a root containing spaces")
         expected_agent_models = {
             "explorer": "claude-haiku-4-5-20251001",
+            "codeindexer-explorer": "claude-haiku-4-5-20251001",
+            "scout": "claude-haiku-4-5-20251001",
             "log-analyzer": "claude-haiku-4-5-20251001",
             "test-triager": "claude-haiku-4-5-20251001",
             "implementer": "claude-sonnet-5",
@@ -436,6 +438,8 @@ def main() -> int:
         }
         expected_agent_efforts = {
             "explorer": None,
+            "codeindexer-explorer": None,
+            "scout": None,
             "log-analyzer": None,
             "test-triager": None,
             "implementer": "high",
@@ -445,7 +449,7 @@ def main() -> int:
             "long-horizon": "xhigh",
         }
         require(
-            ready["runtime_schema"] == "5"
+            ready["runtime_schema"] == "6"
             and ready["context_state"] == "observed"
             and ready["context_compactions"] == 0
             and ready["stage_health_state"] == "observed"
@@ -483,10 +487,11 @@ def main() -> int:
             "Claude CLI role effort map drift",
         )
         read_only_roles = (
-            "explorer", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
+            "explorer", "codeindexer-explorer", "scout", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
         )
         require(
-            all(agents[role]["tools"] == ["Read", "Grep", "Glob", "Bash"] for role in read_only_roles),
+            all(agents[role]["tools"] == ["Read", "Grep", "Glob", "Bash"] for role in read_only_roles if role != "codeindexer-explorer")
+            and agents["codeindexer-explorer"]["tools"] == ["Read", "Grep", "Glob", "Bash", "mcp__codeindexer__search_code", "mcp__codeindexer__read_chunk", "mcp__codeindexer__read_file_range", "mcp__codeindexer__file_deps", "mcp__codeindexer__find_bridges", "mcp__codeindexer__find_by_signature", "mcp__codeindexer__find_call_chain", "mcp__codeindexer__find_callees", "mcp__codeindexer__find_callers", "mcp__codeindexer__find_execution_flows", "mcp__codeindexer__find_references", "mcp__codeindexer__find_related", "mcp__codeindexer__find_test_coverage"],
             "read-only Claude tool boundary drift",
         )
         require(
@@ -531,7 +536,7 @@ def main() -> int:
         require(json.loads(agents_path.read_text(encoding="utf-8")) == agents, "Claude did not receive roster snapshot")
         registration_dir = runtime_dir.parent
         require(
-            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "5",
+            (registration_dir / "runtime_schema_version").read_text(encoding="utf-8").strip() == "6",
             "schema file drift",
         )
         require(
@@ -1137,7 +1142,7 @@ def main() -> int:
         require(resumed_observed["subagent_model"] is None, "resume inherited a global subagent model")
         require(resumed_observed["effort_level"] is None, "resume inherited a global effort override")
         require(
-            resumed_ready["runtime_schema"] == "5"
+            resumed_ready["runtime_schema"] == "6"
             and resumed_ready["context_state"] == "decision_required"
             and resumed_ready["context_compactions"] == 3,
             f"resume lifecycle state drift: {resumed_ready}",
@@ -1154,6 +1159,38 @@ def main() -> int:
         resumed.wait(timeout=5)
         os.close(resumed_master)
         saved_claude_state.rename(claude_state)
+
+        # A pre-update schema-5 registration has the historical eight-role
+        # snapshot and no per-role telemetry file. It must remain resumable.
+        schema_path = registration_dir / "runtime_schema_version"
+        counter_path = registration_dir / "health/agent_calls_by_role.json"
+        schema_path.write_text("5\n", encoding="utf-8")
+        old_agents = {name: definition for name, definition in agents.items() if name not in {"codeindexer-explorer", "scout"}}
+        agents_path.write_text(json.dumps(old_agents, indent=2) + "\n", encoding="utf-8")
+        saved_counter = counter_path.read_bytes()
+        counter_path.unlink()
+        schema5_record = base / "schema-5 resume record.json"
+        schema5_env = env.copy()
+        schema5_env["FAKE_CLAUDE_RECORD"] = str(schema5_record)
+        schema5_env.pop("FAKE_CLAUDE_CHILD_PID")
+        schema5_worker, schema5_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--resume", worker_uuid], cwd=repo, env=schema5_env
+        )
+        schema5_output = read_pty(schema5_worker, schema5_master, needle="CODEX_PTY_WORKER_READY")
+        require("CODEX_PTY_WORKER_READY" in schema5_output, f"pre-update schema-5 worker did not resume: {schema5_output}")
+        schema5_ready_line = next(line for line in schema5_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+        schema5_ready = json.loads(schema5_ready_line.split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
+        require(schema5_ready["runtime_schema"] == "5", "schema-5 resume was silently migrated")
+        require(schema5_ready["agent_models"] == {name: definition["model"] for name, definition in old_agents.items()}, "schema-5 roster was not pinned")
+        wait_for(schema5_record)
+        schema5_observed = json.loads(schema5_record.read_text(encoding="utf-8"))
+        require(json.loads(option_value(schema5_observed["argv"], "--agents")) == old_agents, "schema-5 resume received current roster")
+        schema5_worker.terminate()
+        schema5_worker.wait(timeout=5)
+        os.close(schema5_master)
+        schema_path.write_text("6\n", encoding="utf-8")
+        agents_path.write_text(exact_agents_snapshot, encoding="utf-8")
+        counter_path.write_bytes(saved_counter)
 
         other_record = base / "other worker record.json"
         other_child_record = base / "other worker child.pid"
@@ -1538,6 +1575,8 @@ def main() -> int:
         require(dry_run.returncode == 0 and "DRY_RUN: no files written" in dry_run.stdout, "native setup dry run failed")
         expected_native_models = {
             "source_explorer": "gpt-5.6-luna",
+            "codeindexer_explorer": "gpt-5.6-luna",
+            "scout": "gpt-5.6-luna",
             "test_runner": "gpt-5.6-luna",
             "mech_executor": "gpt-5.6-terra",
             "reviewer": "gpt-5.6-terra",
@@ -1581,8 +1620,10 @@ def main() -> int:
         installed = sorted(path.name for path in agent_dir.glob("*.toml"))
         require(
             installed == [
+                "codeindexer_explorer.toml",
                 "mech_executor.toml",
                 "reviewer.toml",
+                "scout.toml",
                 "security_reviewer.toml",
                 "source_explorer.toml",
                 "test_runner.toml",
@@ -1596,6 +1637,17 @@ def main() -> int:
             for path in agent_dir.glob("*.toml")
         }
         require(installed_native_models == expected_native_models, f"native default model map drift: {installed_native_models}")
+
+        old_native_files = {path.name: path.read_bytes() for path in agent_dir.glob("*.toml") if path.stem not in {"codeindexer_explorer", "scout"}}
+        (agent_dir / "codeindexer_explorer.toml").unlink()
+        (agent_dir / "scout.toml").unlink()
+        additive = subprocess.run(
+            [zsh, str(SETUP), "--target", "project", "--root", str(repo), "--add-missing", "--apply", "--yes"],
+            cwd=repo, env=env, text=True, capture_output=True, check=False,
+        )
+        require(additive.returncode == 0 and "Installed 2 native Codex role files" in additive.stdout, f"native additive update failed: {additive.stderr}")
+        require({path.name: path.read_bytes() for path in agent_dir.glob("*.toml") if path.name in old_native_files} == old_native_files, "native additive update overwrote an existing role")
+        require((agent_dir / "codeindexer_explorer.toml").is_file() and (agent_dir / "scout.toml").is_file(), "native additive update did not add new roles")
 
         trusted_applied = subprocess.run(
             [zsh, str(SETUP), "--target", "user", "--apply", "--yes"],
@@ -1778,7 +1830,7 @@ def main() -> int:
         dangling = symlink_agent_dir / "source_explorer.toml"
         dangling.symlink_to("missing-target.toml")
         symlink_collision = subprocess.run(
-            [zsh, str(SETUP), "--target", "project", "--root", str(symlink_repo), "--apply", "--yes"],
+            [zsh, str(SETUP), "--target", "project", "--root", str(symlink_repo), "--add-missing", "--apply", "--yes"],
             cwd=symlink_repo,
             env=env,
             text=True,
@@ -1786,7 +1838,7 @@ def main() -> int:
             check=False,
         )
         require(
-            symlink_collision.returncode == 73 and "REFUSING_TO_OVERWRITE" in symlink_collision.stderr,
+            symlink_collision.returncode == 73 and "UNSAFE_COLLISION" in symlink_collision.stderr,
             "native setup did not refuse a dangling symlink",
         )
         require(dangling.is_symlink() and os.readlink(dangling) == "missing-target.toml", "dangling symlink changed")
@@ -1821,7 +1873,7 @@ def main() -> int:
         require(outcomes.count(0) == 1 and all(code in (0, 73, 75) for code in outcomes), f"concurrent setup outcomes: {outcomes} {first_output} {second_output}")
         concurrent_agent_dir = concurrent_repo / ".codex/agents"
         concurrent_roles = sorted(concurrent_agent_dir.glob("*.toml"))
-        require(len(concurrent_roles) == 5, "concurrent setup left a partial role set")
+        require(len(concurrent_roles) == 7, "concurrent setup left a partial role set")
         installed_models = {
             re.search(r'^model = "([^"]+)"$', path.read_text(encoding="utf-8"), re.MULTILINE).group(1)
             for path in concurrent_roles

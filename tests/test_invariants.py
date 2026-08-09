@@ -88,6 +88,8 @@ def main() -> int:
 
     expected_agent_models = {
         "explorer": "claude-haiku-4-5-20251001",
+        "codeindexer-explorer": "claude-haiku-4-5-20251001",
+        "scout": "claude-haiku-4-5-20251001",
         "log-analyzer": "claude-haiku-4-5-20251001",
         "test-triager": "claude-haiku-4-5-20251001",
         "implementer": "claude-sonnet-5",
@@ -98,6 +100,8 @@ def main() -> int:
     }
     expected_agent_efforts = {
         "explorer": None,
+        "codeindexer-explorer": None,
+        "scout": None,
         "log-analyzer": None,
         "test-triager": None,
         "implementer": "high",
@@ -108,6 +112,8 @@ def main() -> int:
     }
     expected_agent_tools = {
         "explorer": ["Read", "Grep", "Glob", "Bash"],
+        "codeindexer-explorer": ["Read", "Grep", "Glob", "Bash", "mcp__codeindexer__search_code", "mcp__codeindexer__read_chunk", "mcp__codeindexer__read_file_range", "mcp__codeindexer__file_deps", "mcp__codeindexer__find_bridges", "mcp__codeindexer__find_by_signature", "mcp__codeindexer__find_call_chain", "mcp__codeindexer__find_callees", "mcp__codeindexer__find_callers", "mcp__codeindexer__find_execution_flows", "mcp__codeindexer__find_references", "mcp__codeindexer__find_related", "mcp__codeindexer__find_test_coverage"],
+        "scout": ["Read", "Grep", "Glob", "Bash"],
         "log-analyzer": ["Read", "Grep", "Glob", "Bash"],
         "test-triager": ["Read", "Grep", "Glob", "Bash"],
         "implementer": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
@@ -129,7 +135,7 @@ def main() -> int:
         "Claude role tool map drift",
     )
     read_only_roles = {
-        "explorer", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
+        "explorer", "codeindexer-explorer", "scout", "log-analyzer", "test-triager", "debugger", "reviewer", "security-reviewer"
     }
     require(
         {name for name, definition in agent_roster.items() if definition.get("permissionMode") == "plan"}
@@ -144,6 +150,26 @@ def main() -> int:
         for marker in ("Boundary:", "Return:", "Choose the method."):
             require(marker in prompt, f"Claude prompt contract missing {marker}: {name}")
         require(len(prompt.split()) <= 65, f"Claude prompt is no longer lean: {name}")
+    expected_descriptions = {
+        "explorer": "Use proactively for bounded file discovery, source search, and fact extraction when independent evidence or context isolation has net value.",
+        "codeindexer-explorer": "Use proactively for read-only semantic reconstruction or impact analysis when guarded CodeIndexer evidence or context isolation has net value.",
+        "scout": "Use proactively for bounded local operational reconnaissance: health, logs, queues, processes, disk state, and other read-only runtime facts.",
+        "log-analyzer": "Use proactively for classifying logs, build output, and test results when isolating noisy evidence has net value.",
+        "test-triager": "Use proactively for a read-only pass over test failures when an isolated causal assessment has net value.",
+        "implementer": "Use for ordinary bounded implementation only when isolated edit custody has net value and the parent transfers the sole edit scope.",
+        "debugger": "Use for multi-step diagnosis when isolated command output and reasoning have net value; do not edit source.",
+        "reviewer": "Use for independent review when a separate falsifying pass on regressions, architecture, or missing verification has net value.",
+        "security-reviewer": "Use for focused security, authorization, concurrency, privacy, and recovery review when independent adversarial evidence has net value.",
+        "long-horizon": "Use only after an explicit long-horizon route and explicit sole edit custody for an exceptionally large autonomous outcome; Fable is preferred and Opus is the availability fallback.",
+    }
+    require(
+        {role: agent_roster[role]["description"] for role in expected_descriptions} == expected_descriptions,
+        "Claude role descriptions lost their semantic taxonomy",
+    )
+    require("explicit long-horizon route" in agent_roster["long-horizon"]["description"], "long-horizon is not explicit-only")
+    guarded_tools = set(re.findall(r"mcp__codeindexer__[a-z_]+", read(SKILL / "scripts/worker-codeindexer-guard.zsh")))
+    indexed_tools = set(agent_roster["codeindexer-explorer"]["tools"][4:])
+    require(indexed_tools and indexed_tools < guarded_tools, "CodeIndexer explorer tools exceed the guard allowlist")
 
     worker_prompt = read(SKILL / "assets/worker-system-prompt.txt")
     require(worker_prompt.startswith("Outcome:"), "worker prompt is not outcome-first")
@@ -153,6 +179,8 @@ def main() -> int:
     require("launcher enforces their roles and models" in worker_prompt, "runtime routing boundary missing")
     require("CodeIndexer is optional" in worker_prompt and "verify material indexed findings in source" in worker_prompt, "lean CodeIndexer contract missing")
     require("roles are routes, not a mandatory pipeline" in worker_prompt.casefold(), "optional proactive role topology missing")
+    require("Read-only Haiku roles may be chosen" in worker_prompt, "cost-aware proactive delegation missing")
+    require("Sonnet and Opus roles" in worker_prompt and "specific descriptions" in worker_prompt, "expensive role routing is not bounded")
     require("checkpoint neither" in worker_prompt and "transfers custody" in worker_prompt, "checkpoint authority boundary missing")
     require(len(worker_prompt.split()) <= 290, "worker prompt is no longer lean")
     assignment_headings = (
@@ -185,6 +213,7 @@ def main() -> int:
         require(role in router_text and model in router_text, f"router mapping missing: {role}")
     require('"permissionDecision":"deny"' in router_text, "router lacks a blocking decision")
     require("subagent_type" in router_text, "router does not inspect the requested role")
+    require("scout|codeindexer-explorer" in router_text, "new Haiku roles are not router-enforced")
 
     require(
         "CODEX_CLAUDE_PARENT_MODEL:-claude-sonnet-5" in launcher,
@@ -207,8 +236,8 @@ def main() -> int:
     require('--mcp-config "$runtime_mcp"' in launcher, "pinned CodeIndexer MCP snapshot is not injected")
     require('mcp_args=(--mcp-config "$runtime_mcp")' in launcher, "MCP snapshot is not schema-scoped")
 
-    require("runtime_schema_version" in launcher and 'print -r -- "5"' in launcher, "runtime schema-5 pin missing")
-    require('print -r -- "0.3.2" > "$registration/runtime_version"' in launcher, "runtime schema-5 version drift")
+    require("runtime_schema_version" in launcher and 'print -r -- "6"' in launcher, "runtime schema-6 pin missing")
+    require('print -r -- "0.3.2" > "$registration/runtime_version"' in launcher, "runtime package version drift")
     for snapshot in (
         "worker-agents.json",
         "worker-system-prompt.txt",
@@ -232,6 +261,8 @@ def main() -> int:
     require("CODEX_CLAUDE_STAGE_WARN_CACHE_READ_TOKENS:-131072" in launcher and "CODEX_CLAUDE_STAGE_MAX_CACHE_READ_TOKENS:-262144" in launcher, "cache policy defaults missing")
     require("CODEX_CLAUDE_STAGE_WARN_SECONDS:-600" in launcher and "CODEX_CLAUDE_STAGE_MAX_SECONDS:-1200" in launcher, "elapsed policy defaults missing")
     require("CODEX_CLAUDE_STAGE_WARN_PARENT_TOOL_CALLS:-128" in launcher and "CODEX_CLAUDE_STAGE_MAX_PARENT_TOOL_CALLS:-256" in launcher, "parent-tool fallback defaults missing")
+    require("agent_calls_by_role.json" in launcher and "agent_calls_by_role" in stage_guard_text, "per-role Agent call accounting missing")
+    require(".tool_input.subagent_type" in stage_guard_text and "write_json" in stage_guard_text, "per-role Agent call accounting is not content-free and atomic")
     require("PostCompact" in launcher, "completed compactions are not observed")
     require("/bin/chmod 700 \"$runtime_dir\"" in launcher, "runtime directory mode missing")
     require("/bin/chmod 600 \"$runtime_prompt\"" in launcher, "prompt snapshot mode missing")
@@ -267,7 +298,7 @@ def main() -> int:
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")
-    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5"' in runtime, "durable legacy/current schema support missing")
+    require('"$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" || "$runtime_schema" == "6"' in runtime, "durable legacy/current schema support missing")
     require("pgrep" not in toggle and "pkill" not in toggle, "toggle contains a broad process-name matcher")
 
     live_check = retire.index("CLAUDE_RETIRE_WORKER_STILL_LIVE")
@@ -277,6 +308,8 @@ def main() -> int:
     require("ps -axo pid=" in runtime, "shared liveness proof lacks missing/stale-lease process scan")
     expected_native = {
         "source_explorer": ("gpt-5.6-luna", "medium"),
+        "codeindexer_explorer": ("gpt-5.6-luna", "medium"),
+        "scout": ("gpt-5.6-luna", "medium"),
         "test_runner": ("gpt-5.6-luna", "low"),
         "mech_executor": ("gpt-5.6-terra", "medium"),
         "reviewer": ("gpt-5.6-terra", "high"),
@@ -299,9 +332,14 @@ def main() -> int:
         instructions = re.search(r'developer_instructions = """\n(.*?)\n"""', template_text, re.DOTALL)
         require(instructions is not None and instructions.group(1).startswith("Outcome:"), f"native prompt not outcome-first: {role}")
         normalized_instructions = " ".join(instructions.group(1).split())
-        for marker in ("Boundary:", "Return", "Choose the method."):
-            require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
-        require(len(instructions.group(1).split()) <= 85, f"native prompt is no longer lean: {role}")
+        if role in {"scout", "codeindexer_explorer"}:
+            for marker in ("Boundaries:", "Done when:", "Choose"):
+                require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
+            require(len(instructions.group(1).split()) <= 100, f"native prompt is no longer lean: {role}")
+        else:
+            for marker in ("Boundary:", "Return", "Choose the method."):
+                require(marker in normalized_instructions, f"native prompt contract missing {marker}: {role}")
+            require(len(instructions.group(1).split()) <= 85, f"native prompt is no longer lean: {role}")
 
     for marker in (
         '--sandbox "$sandbox_mode"',
@@ -324,7 +362,7 @@ def main() -> int:
     ):
         require(marker in native_runner, f"isolated native launcher missing: {marker}")
     require(
-        'source_explorer|reviewer|security_reviewer)' in native_runner
+        'source_explorer|codeindexer_explorer|scout|reviewer|security_reviewer)' in native_runner
         and 'required_sandbox="read-only"' in native_runner,
         "read-only native role map drift",
     )
@@ -375,6 +413,9 @@ def main() -> int:
         "`fork_turns=all` and the default are invalid",
         "`subagent_type` field for native routing",
         "pure read/search MCP tools",
+        "`Known evidence`",
+        "New schema-6 workers",
+        "active assignments serialize write custody by that\nroot",
     ):
         require(phrase in readme, f"native routing documentation missing: {phrase}")
 

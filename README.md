@@ -58,7 +58,7 @@ flowchart TD
     U[User outcome and exact authority] --> C[Codex orchestrator]
     C -->|small or orchestrator-owned work| D[Codex works directly]
     C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: Claude Sonnet 5 / high]
-    O -->|search / logs / first triage| H[Haiku roles]
+    O -->|search / logs / first triage / local scouting| H[Haiku roles]
     O -->|implementation / debugging| S[Sonnet roles]
     O -->|review / security| P[Opus roles]
     O -->|exceptional long horizon| F[Fable role<br/>current-parent fallback]
@@ -69,7 +69,7 @@ flowchart TD
     O -->|terminal handoff + custody return| C
     C -->|independent verification| U
     C -. Claude unavailable; no live writer .-> N[Native Codex fallback<br/>GPT-5.6 role map]
-    N --> E[source_explorer / reviewer<br/>security_reviewer]
+    N --> E[source_explorer / codeindexer_explorer / scout<br/>reviewer / security_reviewer]
     N --> W[one mech_executor]
     N --> T[test_runner after custody return]
 ```
@@ -140,18 +140,22 @@ source in both CLIs before relying on included plan usage.
    would dominate, and chooses Claude only when persistence, specialization, or
    parallelism should improve total cost or elapsed time without weakening the
    result.
-3. **Codex creates a bounded contract.** The handoff states the outcome, an
-   observable `Done when`, boundaries, authoritative context, non-goals, and the
-   evidence required back.
+3. **Codex creates a bounded contract.** The seven verbatim headings are
+   `Outcome`, `Done when`, `Boundaries`, `Authoritative context`, `Non-goals`,
+   `Known evidence`, and `Required handoff`.
 4. **The plugin launches a worker for one bounded stage.** Its registration is bound to the
    current Codex thread, canonical repository root, and session UUID. A second
    live worker in the same current thread/root is refused; active assignments
    serialize write custody by root and the HOME-wide busy limit defaults to two.
 5. **The Sonnet parent owns execution.** It receives the task body through the PTY,
    never as a process argument, and chooses its own method.
-6. **Claude routes supporting packages.** Search and triage go to Haiku,
-   implementation and debugging to Sonnet, difficult review to Opus, and only
-   exceptional long-horizon work to Fable.
+6. **Claude routes supporting packages.** Direct and indexed search, local
+   operational reconnaissance, and triage go to Haiku and may be selected
+   proactively when their isolation has expected net value after transfer and
+   integration costs. Implementation and debugging go to Sonnet, difficult
+   review to Opus, and only explicitly routed exceptional long-horizon work to
+   Fable. These costlier routes require their role-specific need; no role forms
+   a mandatory pipeline.
 7. **The worker returns a compact handoff, then exits.** Codex sends `/exit`,
    proves the named process group dead, and calls matching rotate or retire;
    only then does that stage's assignment terminalize. It reports changed artifacts,
@@ -188,6 +192,8 @@ selects the worker.
 | Claude role | Model | Effort | Intended work |
 | --- | --- | --- | --- |
 | `explorer` | `claude-haiku-4-5-20251001` | not supported by Haiku | file search, source facts, bounded discovery |
+| `codeindexer-explorer` | `claude-haiku-4-5-20251001` | not supported by Haiku | guarded semantic reconstruction and impact evidence |
+| `scout` | `claude-haiku-4-5-20251001` | not supported by Haiku | local logs, health state, queues, and service topology |
 | `log-analyzer` | `claude-haiku-4-5-20251001` | not supported by Haiku | logs, test output, classification |
 | `test-triager` | `claude-haiku-4-5-20251001` | not supported by Haiku | first pass over failures |
 | `implementer` | `claude-sonnet-5` | `high` | ordinary bounded implementation |
@@ -201,6 +207,8 @@ selects the worker.
 | Native role | Model | Reasoning effort | Intended work |
 | --- | --- | --- | --- |
 | `source_explorer` | `gpt-5.6-luna` | `medium` | direct read-only source discovery |
+| `codeindexer_explorer` | `gpt-5.6-luna` | `medium` | guarded read-only semantic reconstruction and impact analysis |
+| `scout` | `gpt-5.6-luna` | `medium` | local read-only operational reconnaissance |
 | `test_runner` | `gpt-5.6-luna` | `low` | bounded verification after edit custody returns |
 | `mech_executor` | `gpt-5.6-terra` | `medium` | sole owner of one bounded implementation |
 | `reviewer` | `gpt-5.6-terra` | `high` | correctness, regression, and evidence review |
@@ -466,7 +474,7 @@ analysis, and persistent agent memory. This variant is intended for large or
 multi-repository systems where those derived views can reduce repeated file
 search and context rebuilding.
 
-New schema-4 workers read only the `codeindexer` entry from `$HOME/.claude.json`
+New schema-6 workers read only the `codeindexer` entry from `$HOME/.claude.json`
 and accept an exact credential-free `http` loopback `/mcp` URL. The minimal
 config is copied into the private session snapshot; resume never rereads the
 global file. A `PreToolUse` guard allows a small semantic read surface and
@@ -497,9 +505,16 @@ selected with `--model` or `CODEX_NATIVE_AGENT_MODEL`. A repeatable
 `--role-model role=model` overrides one role and takes precedence over a
 uniform override.
 
+For an existing older installation, use `--add-missing --apply --yes` to add
+only missing regular role files (including `codeindexer_explorer` and `scout`).
+It keeps every existing regular role file byte-for-byte and rejects symlinks or
+other unsafe collisions; the default mode continues to refuse any collision.
+
 The templates are:
 
 - `source_explorer` — read-only source reconstruction;
+- `codeindexer_explorer` — guarded read-only semantic reconstruction and impact analysis;
+- `scout` — read-only local operational reconnaissance;
 - `reviewer` — read-only correctness and regression review;
 - `security_reviewer` — read-only focused security review;
 - `mech_executor` — the sole bounded edit owner after explicit custody transfer;
@@ -520,12 +535,14 @@ model of the main Codex session; this plugin never pins it.
 | Claude subagent | One role-specific supporting package; only implementer or long-horizon can receive edit custody | Expand authority, adopt another session, recursively delegate, write coordination state |
 | Native fallback | The same unchanged contract after verified transfer | Adopt a live Claude session or resume a retired assignment |
 
-The launcher's boundary is ownership, not exclusivity. It creates an atomic
+The launcher's boundary is ownership, not an operating-system sandbox. It creates an atomic
 lease keyed by the session UUID and a durable registration bound to the
 canonical root and a hash of the current Codex thread. The raw thread identifier
-is not stored. Any number of Codex-owned workers may therefore be live in one
-canonical root, each with its own lease, while no Codex thread may resume,
-assign, rotate, retire, or otherwise steer a session it did not register.
+is not stored. Multiple Codex-owned workers may be live in one canonical root,
+each with its own lease, but active assignments serialize write custody by that
+root: a second active assignment is refused until the first terminalizes. No
+Codex thread may resume, assign, rotate, retire, or otherwise steer a session
+it did not register.
 
 Because each lifecycle check targets exactly one session UUID, retiring or
 rotating a worker proves only that that worker is dead. It does not prove the
@@ -592,15 +609,20 @@ yourself before native writes. These are cooperative controls, not proof against
 a process deliberately detached from its group; after a crash, lost PTY, or
 ambiguous identity, stay read-only or use an isolated worktree.
 
-Version `0.3.2` adds schema 5 with a parent-stage health checkpoint on top of
-schema 4's pinned read-only CodeIndexer profile and schema 3's content-free
-compaction observer. The checkpoint stores only private counters, request
-identifiers, usage numbers, timestamps, and reason codes. It warns once, then
+Version `0.3.2` uses schema 6 for new registrations, retaining schema 5 as a
+resume-only legacy format. Both schemas retain the parent-stage health
+checkpoint on top of schema 4's pinned read-only CodeIndexer profile and schema
+3's content-free compaction observer. Schema 6 adds the current exact 10-role
+roster and private per-role Agent-call counters; schema 5 retains its pinned
+eight-role roster and has no per-role counter. The checkpoint stores only
+private counters, request identifiers, usage numbers, timestamps, and reason
+codes. It warns once, then
 denies another parent tool at the snapshotted request/parent-tool/cache-read/
 elapsed envelope so the worker returns a handoff. The parent-tool bound remains
 active when transcript usage is delayed or unavailable. It never kills,
 retires, transfers custody, or declares the outer goal complete. Schema-4
-resumes preserve their CodeIndexer snapshot; schema-3 resumes remain MCP-free
+and schema-5 resumes preserve their original roster and CodeIndexer snapshot;
+schema-3 resumes remain MCP-free
 and reuse their original snapshots. Schema-2
 and schema-1 resumes likewise keep their original roster/model behavior and
 report context as `unobserved_legacy`; none is silently converted. Unversioned
@@ -642,7 +664,7 @@ in one root:
 - a global gate serializes launch, disable, and retirement state transitions;
 - generated settings deny common configuration edits and the CLI denies common
   external, destructive, publication, and service-control commands;
-- setting sources are empty; schema 4 enables only the pinned, guarded,
+- setting sources are empty; schemas 5 and 6 enable only the pinned, guarded,
   credential-free loopback CodeIndexer snapshot, while schema 1–3 remain
   MCP-free;
 - inherited global subagent-model overrides are removed for schema-2+ workers;

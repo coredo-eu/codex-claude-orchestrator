@@ -227,7 +227,7 @@ cco_lease_has_status_registration() {
      "$(<"$registration/root")" == "$root" &&
      "$(<"$registration/session_uuid")" == "$uuid" &&
      "$(<"$registration/process_group")" == "$group" &&
-     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" ) ]]
+     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" || "$runtime_schema" == "6" ) ]]
 }
 
 # Atomically replace an active record with a terminal audit record. Absence is
@@ -533,5 +533,5 @@ cco_lease_has_durable_registration() {
      "$(<"$registration/path_hash")" == "$path_hash" &&
      "$(<"$registration/session_uuid")" == "$uuid" &&
      "$(<"$registration/process_group")" == "$(<"$lease/process_group")" &&
-     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" ) ]]
+     ( "$runtime_schema" == "1" || "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" == "4" || "$runtime_schema" == "5" || "$runtime_schema" == "6" ) ]]
 }

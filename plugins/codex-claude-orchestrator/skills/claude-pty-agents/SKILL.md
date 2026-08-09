@@ -89,10 +89,11 @@ CODEX_CLAUDE_PARENT_ROUTE_REASON=independent_review
 ```
 
 The launcher passes a private session-scoped `--agents` roster. Explorer,
-log-analyzer, and test-triager use `claude-haiku-4-5-20251001`; implementer and
-debugger use `claude-sonnet-5`; reviewer and security-reviewer use
-`claude-opus-5`. Long-horizon uses `claude-fable-5`. The ordinary Sonnet parent
-starts at `high` effort. Haiku roles use the model's fixed behavior because Haiku 4.5 has
+codeindexer-explorer, scout, log-analyzer, and test-triager use
+`claude-haiku-4-5-20251001`; implementer and debugger use `claude-sonnet-5`;
+reviewer and security-reviewer use `claude-opus-5`. Long-horizon uses
+`claude-fable-5`. The ordinary Sonnet parent starts at `high` effort. Haiku
+roles use the model's fixed behavior because Haiku 4.5 has
 no configurable effort; implementer uses `high`, reviewer uses `medium`, and
 debugger, security-reviewer, and long-horizon use `xhigh`. When Fable is outside
 the account's allowed model set, Claude Code inherits the current parent; for
@@ -100,9 +101,13 @@ other availability failures, the parent retains
 the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted
 roles or mismatched model overrides. Read-only roles receive Bash in `plan`
 mode when the parent permission mode permits that override. The default parent
-uses this roster proactively when independent evidence, context isolation, or
-safe parallelism has net value. Roles are optional routes, not a mandatory
-pipeline, and no fixed task-size threshold replaces outcome judgment. The default parent
+may use the read-only Haiku roles proactively when independent evidence,
+context isolation, or safe parallelism has expected net value after transfer
+and integration costs. Sonnet and Opus roles are selected only when their
+specific descriptions justify that cost. Long-horizon is explicit-route-only
+and requires explicit sole edit custody. Roles are optional routes, not a
+mandatory pipeline, and no fixed task-size threshold replaces outcome judgment.
+The default parent
 starts in Claude Code Auto Mode to avoid manual approval queues; current Claude
 Code versions make subagents inherit parent Auto Mode, so their remaining
 read-only boundary is the role contract and absence of Edit/Write tools, not an
@@ -112,7 +117,7 @@ OS-enforced Bash sandbox. The launcher explicitly removes inherited
 collapse role-specific routing.
 
 The launcher loads no user/project/local settings sources and does not edit
-standalone Claude configuration. A new schema-5 worker extracts only the exact
+standalone Claude configuration. A new schema-6 worker extracts only the exact
 credential-free loopback CodeIndexer entry from `$HOME/.claude.json`, snapshots
 it privately, and guards its MCP tools with a read-only allowlist. Resume uses
 that snapshot without rereading the global file. It remains optional; direct
@@ -163,9 +168,11 @@ the assignment. A resumed active assignment is recovery only: do not rerun
 Claude Code still owns compaction; the runtime counts completed `PostCompact`
 events without retaining their summaries.
 
-New schema-5 stages also receive a parent-only `PreToolUse` checkpoint. Its
+Schema-5 and schema-6 stages receive a parent-only `PreToolUse` checkpoint. Its
 private registration state contains only counters, request identifiers, usage
-numbers, timestamps, reason codes, and the task identifier; it never stores
+numbers, timestamps, reason codes, and the task identifier; only schema 6 adds
+per-role Agent-call counters and the current 10-role roster, while schema 5
+resumes retain the historical eight-role snapshot without that counter. It never stores
 transcript content. Subagent-internal tool calls are excluded. Defaults are
 32/64 observed parent requests, 128/256 parent tool calls, 131072/262144 maximum
 observed `cache_read_input_tokens`, and 600/1200 elapsed seconds. The parent-tool
@@ -317,7 +324,7 @@ the dry run. Existing role files are never overwritten. Defaults are
 role-specific:
 
 ```text
-source_explorer=gpt-5.6-luna   test_runner=gpt-5.6-luna
+source_explorer=gpt-5.6-luna   codeindexer_explorer=gpt-5.6-luna   scout=gpt-5.6-luna   test_runner=gpt-5.6-luna
 mech_executor=gpt-5.6-terra    reviewer=gpt-5.6-terra
 security_reviewer=gpt-5.6-sol
 ```

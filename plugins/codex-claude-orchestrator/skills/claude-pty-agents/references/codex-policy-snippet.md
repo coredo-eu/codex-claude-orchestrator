@@ -53,8 +53,11 @@ the busy count until explicit terminal reconciliation. This preserves one edit-c
 per canonical root while an assignment is active. A Codex-owned Claude worker
 is permanently local-only and may not commit, push, publish, release, deploy,
 control services, send external messages, administer the host, operate on
-credentials, or perform destructive remediation. Each such action requires
-separate, exact current-user authorization and Codex review.
+credentials, or perform destructive remediation. These restrictions bind the
+worker, not the owning Codex session. After custody returns, Codex may perform
+shared or external actions already authorized by the active goal and its
+unambiguous scope. Codex asks the user only for a material scope expansion or
+when the target or intended end state cannot be determined safely.
 
 Treat `$HOME/.codex/claude-pty-agents.disabled` as the sole worker ON/OFF state.
 Never launch, resume, assign, or poll a worker while it exists. Reuse only the

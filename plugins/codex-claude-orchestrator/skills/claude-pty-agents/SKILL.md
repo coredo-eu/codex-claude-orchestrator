@@ -26,8 +26,11 @@ Give an edit-capable worker one compact contract:
 The worker is permanently local-only. It cannot commit, push, publish, deploy,
 control services, send external messages, administer the host, operate on
 credentials, modify Claude/Codex configuration, or perform destructive
-remediation. Such work requires separate Codex review and exact current-user
-authorization. Maintain one edit owner per canonical worktree.
+remediation. These restrictions bind the worker, not the owning Codex session.
+After custody returns, Codex may perform shared or external actions already
+authorized by the active goal and its unambiguous scope. Codex asks the user only
+for a material scope expansion or when the target or intended end state cannot
+be determined safely. Maintain one edit owner per canonical worktree.
 
 The generated settings, deny rules, prompt, and hook are cooperative controls,
 not an OS sandbox. Bash or a malicious repository instruction can bypass path

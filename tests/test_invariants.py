@@ -393,19 +393,26 @@ def main() -> int:
     ):
         require(phrase in skill_text, f"native sandbox contract missing: {phrase}")
 
+    normalized_policy = " ".join(policy.split())
     for phrase in (
         "Codex owns user intent",
         "minimizes end-to-end model cost and elapsed time",
         "one edit-capable owner",
         "permanently local-only",
-        "exact current-user authorization",
+        "These restrictions bind the worker, not the owning Codex session",
+        "already authorized by the active goal",
+        "material scope expansion",
         "Fallback transfers ownership",
         "pass the exact custom profile through `agent_type`",
         "renaming `task_name` is not a routing fallback",
         "parent runtime is broader than the role",
         "never a repository-owned",
     ):
-        require(phrase in policy, f"opt-in policy missing: {phrase}")
+        require(phrase in normalized_policy, f"opt-in policy missing: {phrase}")
+    require(
+        "exact current-user authorization" not in normalized_policy,
+        "opt-in policy restored the obsolete duplicate-confirmation gate",
+    )
 
     text_files: list[Path] = []
     for path in ROOT.rglob("*"):

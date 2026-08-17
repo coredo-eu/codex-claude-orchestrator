@@ -307,6 +307,7 @@ def main() -> int:
         env.update(
             {
                 "HOME": str(home),
+                "CODEX_HOME": str(home / ".codex"),
                 "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
                 "CODEX_THREAD_ID": "integration-thread",
                 "CLAUDE_CODE_SUBAGENT_MODEL": "inherited-global-sentinel",

@@ -26,8 +26,11 @@ Give an edit-capable worker one compact contract:
 The worker is permanently local-only. It cannot commit, push, publish, deploy,
 control services, send external messages, administer the host, operate on
 credentials, modify Claude/Codex configuration, or perform destructive
-remediation. Such work requires separate Codex review and exact current-user
-authorization.
+remediation. These restrictions bind the worker, not the owning Codex session.
+After custody returns, Codex may perform shared or external actions already
+authorized by the active goal and its unambiguous scope. Codex asks the user only
+for a material scope expansion or when the target or intended end state cannot
+be determined safely.
 
 The launcher never adopts a foreign or standalone Claude session. It permits at
 most two busy assignments per HOME by default (`CODEX_CLAUDE_MAX_BUSY_WORKERS`

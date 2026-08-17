@@ -55,7 +55,7 @@ daemon, and no claim to be an operating-system sandbox.
 
 ```mermaid
 flowchart TD
-    U[User outcome and exact authority] --> C[Codex orchestrator]
+    U[User outcome and active scope] --> C[Codex orchestrator]
     C -->|small or orchestrator-owned work| D[Codex works directly]
     C -->|bounded contract + edit custody| O[Persistent Claude Code parent<br/>default: Claude Sonnet 5 / high]
     O -->|search / logs / first triage / local scouting| H[Haiku roles]
@@ -134,8 +134,9 @@ source in both CLIs before relying on included plan usage.
 
 ## How a task moves through the system
 
-1. **The user gives Codex an outcome.** Existing repository instructions and
-   exact authorization still apply.
+1. **The user gives Codex an outcome.** That implementation request authorizes
+   the actions necessary to reach its unambiguous result inside the active
+   scope; existing repository instructions still apply.
 2. **Codex chooses the executor.** It works directly when delegation overhead
    would dominate, and chooses Claude only when persistence, specialization, or
    parallelism should improve total cost or elapsed time without weakening the
@@ -527,10 +528,10 @@ model of the main Codex session; this plugin never pins it.
 
 ## Authority and custody boundaries
 
-| Actor | Owns | Must not do without separate authority |
+| Actor | Owns | Boundary |
 | --- | --- | --- |
-| User | Desired outcome and exact authorization | Nothing is inferred from tool availability or old handoffs |
-| Codex orchestrator | Material architecture or product tradeoffs, executor choice, authority expansion, conflicts, independent verification, final verdict | Treat a worker handoff as completion or control standalone Claude |
+| User | Desired outcome, restrictions, and active scope | Tool availability and old handoffs do not expand that scope |
+| Codex orchestrator | Material architecture or product tradeoffs, executor choice, authority, conflicts, independent verification, final verdict | Do not expand the active scope, treat a worker handoff as completion, or control standalone Claude |
 | Codex-owned Claude parent | One bounded local lifecycle in one canonical root | Commit, push, publish, deploy, service control, external messages, host administration, credential operations, destructive remediation, config changes |
 | Claude subagent | One role-specific supporting package; only implementer or long-horizon can receive edit custody | Expand authority, adopt another session, recursively delegate, write coordination state |
 | Native fallback | The same unchanged contract after verified transfer | Adopt a live Claude session or resume a retired assignment |

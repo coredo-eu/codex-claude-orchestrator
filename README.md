@@ -144,10 +144,10 @@ source in both CLIs before relying on included plan usage.
 3. **Codex creates a bounded contract.** The seven verbatim headings are
    `Outcome`, `Done when`, `Boundaries`, `Authoritative context`, `Non-goals`,
    `Known evidence`, and `Required handoff`.
-4. **The plugin launches a worker for one bounded stage.** Its registration is bound to the
-   current Codex thread, canonical repository root, and session UUID. A second
-   live worker in the same current thread/root is refused; active assignments
-   serialize write custody by root and the HOME-wide busy limit defaults to two.
+4. **The plugin admits one bounded stage worker.** Before Claude starts, a normal
+   launch reserves its canonical root and one of two HOME-wide live slots.
+   Assignment atomically upgrades `access:none` to `access:write`; root or
+   capacity conflicts therefore do not leave routine empty Claude sessions.
 5. **The Sonnet parent owns execution.** It receives the task body through the PTY,
    never as a process argument, and chooses its own method.
 6. **Claude routes supporting packages.** Direct and indexed search, local
@@ -304,7 +304,7 @@ restore procedural scaffolding.
 
 ## Status and prerequisites
 
-Version `0.3.2` is an early, local-execution release.
+Version `0.4.0` is an early, local-execution release.
 
 "Local execution" describes the orchestration, processes, repository access,
 leases, and custody state. Model requests and supplied content are still handled
@@ -315,7 +315,7 @@ settings.
 | --- | --- |
 | macOS with Claude Code 2.1.215 | Primary development target |
 | Modern Linux with `zsh`, `jq`, Git, `flock`, and `/proc` | Lifecycle tested in CI with fake Claude; real CLI use should be validated locally |
-| Windows / PowerShell | Not supported in v0.2 |
+| Windows / PowerShell | Not supported in v0.4 |
 | Claude Auto Mode | Requires a supported Claude Code version, provider/model, and any applicable organization enablement |
 | Codex surfaces exporting `CODEX_THREAD_ID` to tool shells | Required |
 | Codex surfaces without `CODEX_THREAD_ID` | Unsupported; launcher fails closed |
@@ -464,8 +464,9 @@ The durable context state is an append-only event log, the last acknowledged
 count, and a content-free pending marker left only when an event append cannot
 complete. It contains no prompt, assignment body, transcript, generated
 summary, or subagent return. Like the
-existing kill switch and leases, the assignment gate is cooperative same-UID
-accounting; it is not a sandbox against a compromised worker.
+existing kill switch and leases, launch reservations and the assignment gate
+are cooperative same-UID accounting; they are not a sandbox against a
+compromised worker.
 
 ### CodeIndexer profile
 
@@ -536,19 +537,31 @@ model of the main Codex session; this plugin never pins it.
 | Claude subagent | One role-specific supporting package; only implementer or long-horizon can receive edit custody | Expand authority, adopt another session, recursively delegate, write coordination state |
 | Native fallback | The same unchanged contract after verified transfer | Adopt a live Claude session or resume a retired assignment |
 
-The launcher's boundary is ownership, not an operating-system sandbox. It creates an atomic
-lease keyed by the session UUID and a durable registration bound to the
-canonical root and a hash of the current Codex thread. The raw thread identifier
-is not stored. Multiple Codex-owned workers may be live in one canonical root,
-each with its own lease, but active assignments serialize write custody by that
-root: a second active assignment is refused until the first terminalizes. No
-Codex thread may resume, assign, rotate, retire, or otherwise steer a session
-it did not register.
+Normal launch admission is both a capacity and custody boundary. Each worker
+takes an atomic lease keyed by its own session UUID plus a durable registration
+bound to a hash of the current Codex thread; the raw thread identifier is not
+stored. Before `READY`, the runtime also creates an `access:none` reservation
+for one canonical root and one of two live HOME-wide slots. Assignment upgrades
+that exact record to `access:write` under the same global gate. A normal launch
+therefore refuses a reserved, actively written, or orphan-blocked root before it
+starts Claude.
 
-Because each lifecycle check targets exactly one session UUID, retiring or
-rotating a worker proves only that that worker is dead. It does not prove the
-root is otherwise idle. When several workers share a root, serializing edit
-custody between them stays a Codex orchestration duty, not a launcher guarantee.
+`launch-worker.zsh --idle` is an explicit unreserved compatibility and
+diagnostic mode, not the skill's routine path and not a way to bypass an
+admission failure. Such processes can coexist in one root and do not consume a
+busy slot until legacy-compatible assignment admission. One edit-capable owner
+per worktree remains mandatory.
+
+The runtime also enforces that no Codex thread controls a session it does not
+own. Resume, assignment, successor lineage, rotation, and native-fallback
+retirement each require the exact current thread, root, and UUID registration
+and otherwise fail closed; a live UUID cannot be resumed twice, proven by its
+lease and independently by its registered process group; state too incomplete or
+contradictory to prove death is refused rather than read as a dead worker; and a
+foreign or standalone Claude session is never adopted or discovered by name.
+Operator-authorized orphan abandonment is the only cross-thread lifecycle
+exception and still requires an exact durable tuple, proven process death, and a
+two-step confirmation token.
 
 A live worker receives a private per-session runtime snapshot with directory
 mode `0700` and file modes `0600`/`0700`: generated settings, worker prompt,
@@ -576,12 +589,14 @@ From the installed skill directory:
 ./scripts/toggle-agents.zsh on
 ```
 
-`status` is observational and reports `busy/2`, active and orphaned assignments,
-blocked roots, and verified live workers. It creates nothing on an untouched
-HOME; with existing state it may take/create only the coordination lock, never
-worker or assignment records. It reads no task or transcript content and fails
-closed on ambiguous shared state. Recognized dead pre-registration leases are
-counted separately as `legacy_stale_leases`, without deleting them.
+`status` is observational and reports live admitted `busy` capacity separately from durable
+`active` and `reserved` records. `orphaned` means a proven-dead active writer;
+`stale_reserved` means a proven-dead reservation that ordinary admission can
+safely tombstone; `blocked_roots` includes both open states. It creates nothing
+on an untouched HOME, reads no task or transcript content, changes no worker or
+assignment record, and fails closed on ambiguous shared state. Recognized dead
+pre-registration leases remain separately observational as
+`legacy_stale_leases` and are not deleted.
 
 `off` blocks launch/resume in the runtime and makes a conforming Codex
 orchestrator refuse assignments and polls at its next preflight, without killing
@@ -610,7 +625,18 @@ yourself before native writes. These are cooperative controls, not proof against
 a process deliberately detached from its group; after a crash, lost PTY, or
 ambiguous identity, stay read-only or use an isolated worktree.
 
-Version `0.3.2` uses schema 6 for new registrations, retaining schema 5 as a
+An active assignment whose exact worker is proven dead remains an orphaned root
+block; launch and assignment never clear it automatically. If the user
+explicitly authorizes abandoning that exact `root + UUID + task-id`, run
+`reconcile-orphan.zsh` first without `--apply`. The preview is non-mutating and
+returns a token plus exact effects. Re-run with `--apply <token>` only for the
+unchanged tuple and authorization. The script writes a retirement tombstone and
+terminal assignment state but sends no process signal, reads no transcript,
+adopts no session, deletes no file, and preserves the worktree for inspection.
+A live/ambiguous worker, tuple mismatch, stale token, or conflicting state fails
+closed. Inspect possible partial edits before granting new write custody.
+
+Version `0.4.0` uses runtime schema 6 for new registrations, retaining schema 5 as a
 resume-only legacy format. Both schemas retain the parent-stage health
 checkpoint on top of schema 4's pinned read-only CodeIndexer profile and schema
 3's content-free compaction observer. Schema 6 adds the current exact 10-role
@@ -628,6 +654,9 @@ and reuse their original snapshots. Schema-2
 and schema-1 resumes likewise keep their original roster/model behavior and
 report context as `unobserved_legacy`; none is silently converted. Unversioned
 legacy registrations are not adopted.
+Assignment records use schema 2 to reserve `access:none` admission before
+`READY`, upgrade it atomically to `access:write`, and distinguish safe automatic
+cleanup of dead unassigned reservations from explicit active-orphan recovery.
 
 ## Uninstall and state cleanup
 
@@ -654,12 +683,17 @@ Designed to resist cross-principal session control and common authority drift.
 It does not arbitrate between sibling workers a single Codex thread chose to run
 in one root:
 
-- session-keyed leases give every worker a distinct durable identity, so
-  same-root launches cannot collide or adopt each other's state;
-- exact thread, root, and UUID registration is required to resume, assign,
-  rotate, or retire a session, so cross-thread control fails closed;
+- normal launch reserves shared capacity and one canonical root before `READY`,
+  while explicit unreserved `--idle` workers remain diagnostic compatibility;
+- dead `access:none` reservations can be tombstoned automatically, while an
+  active orphan blocks its root until a proven-dead, exact-tuple, two-step
+  operator reconciliation;
+- current-thread registration prevents UUID-only resume and cross-thread
+  assignment, rotation, or retirement;
+- resume, rotation, and retirement each prove the exact session is dead through
+  its lease and its registered process group, and refuse when state is too
+  incomplete to prove it;
 - a standalone or foreign Claude is never discovered, adopted, or signalled;
-- current-thread registration prevents UUID-only resume;
 - retirement makes native transfer non-resumable and fails closed on a live
   process;
 - a global gate serializes launch, disable, and retirement state transitions;
@@ -700,9 +734,16 @@ decision. Unrelated authority remains unchanged.
 
 The self-check uses a clean temporary home and fake Claude process. It verifies
 manifest structure, shell syntax, exact role routing, snapshot permissions,
-clean-profile argv/environment, concurrent writer rejection, fail-closed live
-retirement, retired resume rejection, kill-switch behavior, native installer
-safety, and absence of private paths or credential-shaped data.
+clean-profile argv/environment, pre-`READY` root/capacity reservations, explicit
+unreserved compatibility workers, access upgrade, dead-reservation cleanup,
+mixed-version fail-closed behavior, live-worker and stale-token rejection during
+operator orphan reconciliation, preserved worktrees, cross-thread control
+rejection, duplicate live-resume rejection both with and without a lease
+directory, fail-closed handling of unprovable liveness, per-session retirement
+and rotation beside a live sibling worker,
+non-interference with a visible standalone Claude, retired resume rejection,
+kill-switch behavior, native installer safety, and absence of private paths or
+credential-shaped data.
 
 ```zsh
 ./scripts/self-check.zsh

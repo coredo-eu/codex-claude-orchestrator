@@ -49,7 +49,7 @@ def main() -> int:
         re.fullmatch(r"\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?", manifest["version"]) is not None,
         "strict semver required",
     )
-    require(manifest["version"].startswith("0.3.2+codex."), "local cachebuster version drift")
+    require(manifest["version"].startswith("0.4.0+codex."), "local cachebuster version drift")
     require(manifest["skills"] == "./skills/", "skill discovery path drift")
     require(manifest.get("license") == "MIT", "MIT manifest license required")
     repository_url = "https://github.com/coredo-eu/codex-claude-orchestrator"
@@ -72,6 +72,9 @@ def main() -> int:
         "Codex owns the repository trust",
         "decision and does not ask the user",
         "This does not expand any other authority",
+        "use `--idle` to bypass this admission path",
+        "unless the user explicitly authorizes abandoning the exact",
+        "inspect the preserved worktree",
     ):
         require(marker in skill_text, f"Codex-owned repository trust policy missing: {marker}")
 
@@ -80,6 +83,7 @@ def main() -> int:
     runtime = read(SKILL / "scripts/runtime-lib.zsh")
     rotate = read(SKILL / "scripts/rotate-worker.zsh")
     retire = read(SKILL / "scripts/retire-native-fallback.zsh")
+    reconcile = read(SKILL / "scripts/reconcile-orphan.zsh")
     toggle = read(SKILL / "scripts/toggle-agents.zsh")
     setup = read(SKILL / "scripts/setup-native-agents.zsh")
     native_runner = read(SKILL / "scripts/run-native-agent.zsh")
@@ -237,7 +241,7 @@ def main() -> int:
     require('mcp_args=(--mcp-config "$runtime_mcp")' in launcher, "MCP snapshot is not schema-scoped")
 
     require("runtime_schema_version" in launcher and 'print -r -- "6"' in launcher, "runtime schema-6 pin missing")
-    require('print -r -- "0.3.2" > "$registration/runtime_version"' in launcher, "runtime package version drift")
+    require('print -r -- "0.4.0" > "$registration/runtime_version"' in launcher, "runtime package version drift")
     for snapshot in (
         "worker-agents.json",
         "worker-system-prompt.txt",
@@ -276,7 +280,31 @@ def main() -> int:
     require("cco_thread_root_has_live_worker" in launcher, "same-thread/root live-worker launch gate missing")
     require("CCO_ASSIGNMENT_ROOT" in runtime and "cco_terminalize_assignment" in runtime, "durable assignment state missing")
     assign = read(SKILL / "scripts/assign-worker.zsh")
-    require("CODEX_CLAUDE_MAX_BUSY_WORKERS:-2" in assign and "CLAUDE_ASSIGN_CAPACITY_BUSY" in assign, "busy admission default missing")
+    require(
+        "CODEX_CLAUDE_MAX_BUSY_WORKERS:-2" in launcher
+        and "CODEX_CLAUDE_MAX_BUSY_WORKERS:-2" in assign
+        and "CLAUDE_LAUNCH_CAPACITY_BUSY" in launcher
+        and "CLAUDE_ASSIGN_CAPACITY_BUSY" in assign,
+        "shared launch/assignment admission default missing",
+    )
+    require(
+        "--idle" in launcher
+        and "idle_unreserved" in launcher
+        and launcher.index('cco_create_reservation "$session_uuid" "$root" "$thread_hash"')
+        < launcher.index('print -r -- "CODEX_PTY_WORKER_READY $ready_json"'),
+        "normal launch does not reserve before READY or lacks explicit idle compatibility",
+    )
+    require(
+        '{version:2,state:"reserved",access:"none"' in runtime
+        and "cco_open_assignments" in runtime
+        and 'task_id:null' in runtime,
+        "access:none reservation schema missing",
+    )
+    require(
+        '.state = "active" | .access = "write"' in assign
+        and "own_reservation" in assign,
+        "assignment does not atomically upgrade its launch reservation",
+    )
     require("CLAUDE_ASSIGN_DUPLICATE_ACTIVE" in assign and "CLAUDE_ASSIGN_ROOT_BUSY" in assign, "assignment conflict handling missing")
     require(assign.index('/bin/mv -- "$health_assignment_tmp" "$health_dir/assignment.json"') < assign.index('/bin/mv -- "$assignment_tmp" "$assignment_record"'), "write assignment is published before stage-health baseline")
     require(stage_guard_text.index('write_scalar "$health/max_cache_read_input_tokens"') < stage_guard_text.index('write_scalar "$health/transcript_cursor_bytes"'), "transcript cursor can advance before cache maximum is durable")
@@ -286,6 +314,30 @@ def main() -> int:
         "launcher still discovers foreign Claude processes by name or cwd",
     )
     require(
+        os.stat(SKILL / "scripts/reconcile-orphan.zsh").st_mode & stat.S_IXUSR,
+        "operator orphan reconciliation is not executable",
+    )
+    for marker in (
+        "CODEX_PTY_ORPHAN_PREVIEW",
+        "CODEX_PTY_ORPHAN_RECONCILED",
+        "CLAUDE_ORPHAN_WORKER_STILL_LIVE",
+        "CLAUDE_ORPHAN_CONFIRMATION_MISMATCH",
+        "worktree_preserved:true",
+    ):
+        require(marker in reconcile, f"operator orphan reconciliation contract missing: {marker}")
+    require(
+        "cco_terminalize_assignment" in reconcile
+        and "--apply" in reconcile
+        and "/bin/kill" not in reconcile
+        and "rm -rf" not in reconcile,
+        "operator orphan reconciliation can signal/delete or lacks two-step terminalization",
+    )
+    require("Bash(*reconcile-orphan.zsh*)" in launcher, "Claude worker can invoke operator reconciliation")
+    require(
+        "cco_scope_overlaps" not in runtime,
+        "scope-overlap exclusivity helper survives in the runtime library",
+    )
+    require(
         "cco_worker_live_reason" in retire and "cco_worker_live_reason" in rotate,
         "custody paths use different liveness proofs",
     )
@@ -293,8 +345,21 @@ def main() -> int:
         all('cco_worker_live_reason "$session_uuid"' in script for script in (retire, rotate)),
         "custody liveness proof is not scoped to the named session UUID",
     )
+    require("cco_worker_lease" in runtime, "session lease resolution missing")
+    require("--add-missing" in setup and "UNSAFE_COLLISION" in setup, "native additive update safety contract missing")
+    require(
+        'lease="$CCO_LEASE_ROOT/$session_uuid"' in launcher and "cco_worker_lease" in assign,
+        "launch and assignment do not preserve the same session identity",
+    )
     require("cco_lease_has_durable_registration" in toggle, "toggle can act outside durable registrations")
-    require("busy=$busy_count/2" in toggle and "orphaned=$orphaned_count" in toggle, "shared admission status is missing")
+    require(
+        "busy=$busy_count/2" in toggle
+        and "active=$active_count" in toggle
+        and "reserved=$reserved_count" in toggle
+        and "orphaned=$orphaned_count" in toggle
+        and "stale_reserved=$stale_reserved_count" in toggle,
+        "shared admission status is missing",
+    )
     require('/bin/kill -TERM -- "-$worker_group"' in toggle, "kill switch does not terminate verified groups")
     require("kill -KILL" not in toggle, "kill switch must fail closed instead of force-killing uncertain groups")
     require("codex-pty-worker" in runtime, "durable owner namespace missing")
@@ -305,7 +370,12 @@ def main() -> int:
     retirement_write = retire.index("retirement_tmp=$(mktemp")
     require(live_check < retirement_write, "retirement marker can precede live-worker rejection")
     require("cco_lease_is_live" in runtime, "shared liveness proof does not verify lease identity")
-    require("ps -axo pid=" in runtime, "shared liveness proof lacks missing/stale-lease process scan")
+    require(
+        "ps -axo args=" in runtime
+        and '"${argv[$index]}" == "--name"' in runtime
+        and '"${argv[$(( index + 1 ))]:-}" == "$uuid"' in runtime,
+        "shared liveness fallback lacks one-snapshot exact argv matching",
+    )
     expected_native = {
         "source_explorer": ("gpt-5.6-luna", "medium"),
         "codeindexer_explorer": ("gpt-5.6-luna", "medium"),
@@ -415,7 +485,7 @@ def main() -> int:
         "pure read/search MCP tools",
         "`Known evidence`",
         "New schema-6 workers",
-        "active assignments serialize write custody by that\nroot",
+        "Assignment atomically upgrades `access:none` to `access:write`",
     ):
         require(phrase in readme, f"native routing documentation missing: {phrase}")
 

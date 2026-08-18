@@ -143,29 +143,69 @@ cco_assignment_record_valid() {
   [[ "$basename" == "${record_uuid:l}.json" ]] || return 1
   "$CCO_JQ" -e '
     type == "object" and
-    ((.state == "active" and (keys | sort) == ["access","assigned_at","root","session_uuid","state","task_id","thread_hash","version"]) or
-     ((.state == "rotated_context" or .state == "transferred_native") and (keys | sort) == ["access","assigned_at","root","session_uuid","state","task_id","terminal_at","thread_hash","version"])) and
-    .version == 1 and .access == "write" and
     (.root | type == "string" and startswith("/") and length > 1) and
     (.session_uuid | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
-    (.task_id | type == "string" and length > 0 and length <= 200 and contains("\n") | not) and
     (.thread_hash | type == "string" and test("^[0-9a-f]{64}$")) and
-    (.assigned_at | type == "string" and length > 0)
+    (
+      (
+        .version == 1 and .access == "write" and
+        (.task_id | type == "string" and length > 0 and length <= 200 and contains("\\n") | not) and
+        (.assigned_at | type == "string" and length > 0) and
+        (
+          (.state == "active" and (keys | sort) == ["access","assigned_at","root","session_uuid","state","task_id","thread_hash","version"]) or
+          ((.state == "rotated_context" or .state == "transferred_native" or .state == "abandoned_orphan") and
+           (keys | sort) == ["access","assigned_at","root","session_uuid","state","task_id","terminal_at","thread_hash","version"])
+        )
+      ) or
+      (
+        .version == 2 and (.reserved_at | type == "string" and length > 0) and
+        (
+          (.state == "reserved" and .access == "none" and .task_id == null and
+           (keys | sort) == ["access","reserved_at","root","session_uuid","state","task_id","thread_hash","version"]) or
+          (.state == "cancelled_unassigned" and .access == "none" and .task_id == null and
+           (.terminal_at | type == "string" and length > 0) and
+           (keys | sort) == ["access","reserved_at","root","session_uuid","state","task_id","terminal_at","thread_hash","version"]) or
+          (
+            .access == "write" and
+            (.task_id | type == "string" and length > 0 and length <= 200 and contains("\\n") | not) and
+            (.assigned_at | type == "string" and length > 0) and
+            (
+              (.state == "active" and
+               (keys | sort) == ["access","assigned_at","reserved_at","root","session_uuid","state","task_id","thread_hash","version"]) or
+              ((.state == "rotated_context" or .state == "transferred_native" or .state == "abandoned_orphan") and
+               (.terminal_at | type == "string" and length > 0) and
+               (keys | sort) == ["access","assigned_at","reserved_at","root","session_uuid","state","task_id","terminal_at","thread_hash","version"])
+            )
+          )
+        )
+      )
+    )
   ' "$record" >/dev/null 2>&1
 }
 
-# Iterate all active assignment records. An unreadable, symlinked, or malformed
-# entry is ambiguous shared state and intentionally fails closed.
-cco_active_assignments() {
-  local record
+# Iterate validated assignment records in selected nonterminal states. An
+# unreadable, symlinked, unknown-version, or malformed entry is ambiguous shared
+# state and intentionally fails closed. Version 2 reserves root and capacity
+# before a task receives write access; version 1 remains readable for upgrades.
+cco_assignment_records_in_states() {
+  local requested_states="$1" record state
   [[ -e "$CCO_ASSIGNMENT_ROOT" || -L "$CCO_ASSIGNMENT_ROOT" ]] || return 0
   [[ -d "$CCO_ASSIGNMENT_ROOT" && ! -L "$CCO_ASSIGNMENT_ROOT" ]] || return 2
   for record in "$CCO_ASSIGNMENT_ROOT"/*(N); do
     [[ "$record" == *.json ]] || return 2
     cco_assignment_record_valid "$record" || return 2
-    [[ "$("$CCO_JQ" -r '.state' "$record")" == "active" ]] && print -r -- "$record"
+    state=$("$CCO_JQ" -r '.state' "$record")
+    [[ " $requested_states " == *" $state "* ]] && print -r -- "$record"
   done
   return 0
+}
+
+cco_active_assignments() {
+  cco_assignment_records_in_states "active"
+}
+
+cco_open_assignments() {
+  cco_assignment_records_in_states "active reserved"
 }
 
 cco_assignment_worker_live() {
@@ -234,11 +274,93 @@ cco_lease_has_status_registration() {
 # legacy-compatible; any nonmatching or malformed record is a conflict.
 cco_assignment_matches() {
   local record="$1" uuid="$2" task_id="$3" root="$4" thread_hash="$5"
+  cco_assignment_identity_matches "$record" "$uuid" "$root" "$thread_hash" || return 1
+  [[ "$("$CCO_JQ" -r '.task_id // empty' "$record")" == "$task_id" ]]
+}
+
+cco_assignment_identity_matches() {
+  local record="$1" uuid="$2" root="$3" thread_hash="$4"
   cco_assignment_record_valid "$record" || return 1
   [[ "$("$CCO_JQ" -r '.session_uuid' "$record")" == "$uuid" &&
-     "$("$CCO_JQ" -r '.task_id' "$record")" == "$task_id" &&
      "$("$CCO_JQ" -r '.root' "$record")" == "$root" &&
      "$("$CCO_JQ" -r '.thread_hash' "$record")" == "$thread_hash" ]]
+}
+
+cco_create_reservation() {
+  local uuid="$1" root="$2" thread_hash="$3" record tmp
+  record="$CCO_ASSIGNMENT_ROOT/$uuid.json"
+  [[ ! -e "$record" && ! -L "$record" ]] || return 2
+  tmp=$(mktemp "$CCO_ASSIGNMENT_ROOT/.assignment.XXXXXX") || return 1
+  "$CCO_JQ" -cn \
+    --arg uuid "$uuid" --arg root "$root" --arg thread_hash "$thread_hash" \
+    --arg reserved_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '{version:2,state:"reserved",access:"none",session_uuid:$uuid,root:$root,
+      task_id:null,thread_hash:$thread_hash,reserved_at:$reserved_at}' > "$tmp" || {
+    /bin/rm -f -- "$tmp"
+    return 1
+  }
+  /bin/chmod 600 "$tmp" && /bin/mv -- "$tmp" "$record" || {
+    /bin/rm -f -- "$tmp"
+    return 1
+  }
+}
+
+cco_terminalize_reservation() {
+  local uuid="$1" root="$2" thread_hash="$3" record tmp state
+  record="$CCO_ASSIGNMENT_ROOT/$uuid.json"
+  cco_assignment_identity_matches "$record" "$uuid" "$root" "$thread_hash" || return 2
+  state=$("$CCO_JQ" -r '.state' "$record")
+  [[ "$state" == "reserved" ]] || { [[ "$state" == "cancelled_unassigned" ]] && return 0 || return 3; }
+  tmp=$(mktemp "$CCO_ASSIGNMENT_ROOT/.assignment.XXXXXX") || return 1
+  "$CCO_JQ" --arg terminal_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.state = "cancelled_unassigned" | .terminal_at = $terminal_at' "$record" > "$tmp" || {
+    /bin/rm -f -- "$tmp"
+    return 1
+  }
+  /bin/chmod 600 "$tmp" && /bin/mv -- "$tmp" "$record" || {
+    /bin/rm -f -- "$tmp"
+    return 1
+  }
+}
+
+# A reservation never granted write custody. Once its exact registered worker is
+# proven dead, any thread may preserve a retirement tombstone and release the
+# admission slot. Active assignments are deliberately excluded from this path.
+cco_reconcile_dead_reservation() {
+  local record="$1" uuid root thread_hash registration retirement tmp live_status state
+  cco_assignment_record_valid "$record" || return 2
+  state=$("$CCO_JQ" -r '.state' "$record")
+  [[ "$state" == "reserved" ]] || return 3
+  live_status=0
+  cco_assignment_worker_live "$record" || live_status=$?
+  (( live_status == 1 )) || { (( live_status == 0 )) && return 1 || return 2; }
+  uuid=$("$CCO_JQ" -r '.session_uuid' "$record")
+  root=$("$CCO_JQ" -r '.root' "$record")
+  thread_hash=$("$CCO_JQ" -r '.thread_hash' "$record")
+  registration="$CCO_SESSION_ROOT/$uuid"
+  cco_registration_matches "$registration" "$root" "$(cco_hash "$root")" "$thread_hash" "$uuid" || return 2
+  retirement="$registration/retirement.json"
+  if [[ -e "$retirement" || -L "$retirement" ]]; then
+    [[ -f "$retirement" && ! -L "$retirement" ]] || return 2
+    "$CCO_JQ" -e --arg uuid "$uuid" --arg root "$root" '
+      type == "object" and .state == "cancelled_unassigned" and
+      .session_uuid == $uuid and .root == $root
+    ' "$retirement" >/dev/null 2>&1 || return 2
+  else
+    tmp=$(mktemp "$registration/.retirement.XXXXXX") || return 2
+    "$CCO_JQ" -cn --arg uuid "$uuid" --arg root "$root" \
+      --arg retired_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+      '{state:"cancelled_unassigned",session_uuid:$uuid,root:$root,
+        retired_at:$retired_at,reason:"worker_died_before_assignment"}' > "$tmp" || {
+      /bin/rm -f -- "$tmp"
+      return 2
+    }
+    /bin/chmod 600 "$tmp" && /bin/mv -- "$tmp" "$retirement" || {
+      /bin/rm -f -- "$tmp"
+      return 2
+    }
+  fi
+  cco_terminalize_reservation "$uuid" "$root" "$thread_hash"
 }
 
 cco_assignment_terminal_preflight() {
@@ -260,10 +382,14 @@ cco_terminalize_assignment() {
   state=$("$CCO_JQ" -r '.state' "$record")
   [[ "$state" == "active" ]] || { [[ "$state" == "$terminal_state" ]] && return 0 || return 3; }
   tmp=$(mktemp "$CCO_ASSIGNMENT_ROOT/.assignment.XXXXXX") || return 1
-  "$CCO_JQ" --arg state "$terminal_state" --arg terminal_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    '.state = $state | .terminal_at = $terminal_at' "$record" > "$tmp" || { /bin/rm -f -- "$tmp"; return 1; }
-  /bin/chmod 600 "$tmp"
-  /bin/mv -- "$tmp" "$record"
+  "$CCO_JQ" --arg state "$terminal_state" --arg terminal_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '.state = $state | .terminal_at = $terminal_at' "$record" > "$tmp" || {
+    /bin/rm -f -- "$tmp"
+    return 1
+  }
+  /bin/chmod 600 "$tmp" && /bin/mv -- "$tmp" "$record" || {
+    /bin/rm -f -- "$tmp"
+    return 1
+  }
 }
 
 # Never discover standalone Claude: this examines only durable registrations
@@ -429,7 +555,8 @@ cco_worker_lease() {
 # lifecycle caller fails closed.
 cco_worker_live_reason() {
   # Note: never name a local "status" here; zsh reserves it as an alias for $?.
-  local uuid="$1" registration root name group lease lease_status pid args field
+  local uuid="$1" registration root name group lease lease_status args field index name_match session_match
+  local -a argv
   registration="$CCO_SESSION_ROOT/$uuid"
   # Every caller proves ownership before reaching this point, so degraded
   # registration state here is unexplained. Report it as live: missing identity
@@ -466,13 +593,25 @@ cco_worker_live_reason() {
     print -r -- "uuid=$uuid root=$root pgid=$group"
     return 0
   fi
-  for pid in "${(@f)$(ps -axo pid= 2>/dev/null || true)}"; do
-    pid=${pid//[[:space:]]/}
-    [[ "$pid" == <-> ]] || continue
-    args=$(cco_process_args "$pid")
-    if [[ ( -z "$name" || "$args" == *"--name $name"* ) &&
-          ( "$args" == *"--session-id $uuid"* || "$args" == *"--resume $uuid"* ) ]]; then
-      print -r -- "uuid=$uuid root=$root pid=$pid"
+  # One process-table snapshot replaces an O(process-count) series of `ps`
+  # subprocesses. Parse every argv line and require exact option/value pairs;
+  # prefix lookalikes and foreign or standalone Claude processes never match.
+  for args in "${(@f)$(ps -axo args= 2>/dev/null || true)}"; do
+    argv=("${(@z)args}")
+    name_match=0
+    [[ -n "$name" ]] || name_match=1
+    session_match=0
+    for (( index = 1; index <= ${#argv}; index++ )); do
+      if [[ -n "$name" && "${argv[$index]}" == "--name" &&
+            "${argv[$(( index + 1 ))]:-}" == "$name" ]]; then
+        name_match=1
+      elif [[ ( "${argv[$index]}" == "--session-id" || "${argv[$index]}" == "--resume" ) &&
+              "${argv[$(( index + 1 ))]:-}" == "$uuid" ]]; then
+        session_match=1
+      fi
+    done
+    if (( name_match == 1 && session_match == 1 )); then
+      print -r -- "uuid=$uuid root=$root argv=registered"
       return 0
     fi
   done

@@ -29,6 +29,7 @@ ASSIGN = SCRIPTS / "assign-worker.zsh"
 ROTATE = SCRIPTS / "rotate-worker.zsh"
 COMPACTION_COUNTER = SCRIPTS / "worker-compaction-counter.zsh"
 RETIRE = SCRIPTS / "retire-native-fallback.zsh"
+RECONCILE_ORPHAN = SCRIPTS / "reconcile-orphan.zsh"
 TOGGLE = SCRIPTS / "toggle-agents.zsh"
 SETUP = SCRIPTS / "setup-native-agents.zsh"
 NATIVE_RUNNER = SCRIPTS / "run-native-agent.zsh"
@@ -415,7 +416,10 @@ def main() -> int:
             encoding="utf-8",
         )
 
-        worker, master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=env)
+        # Keep this long-lived fixture explicitly unreserved so the test can
+        # exercise legacy admission and same-root lifecycle isolation. Normal
+        # launches below use the reserved-by-default path.
+        worker, master = start_pty([zsh, str(LAUNCHER), str(repo), "--idle"], cwd=repo, env=env)
         output = read_pty(worker, master, needle="CODEX_PTY_WORKER_READY")
         require("CODEX_PTY_WORKER_READY" in output, f"worker did not become ready: {output}")
         ready_line = next((line for line in output.splitlines() if "CODEX_PTY_WORKER_READY " in line), "")
@@ -463,6 +467,7 @@ def main() -> int:
             ready["parent_route"] == {"class": "ordinary", "reason": "bounded_local_outcome"},
             "default Sonnet route metadata missing from READY",
         )
+        require(ready["admission_state"] == "idle_unreserved", "explicit idle launch acquired write admission")
         require(ready["agent_models"] == expected_agent_models, "ready marker model roster drift")
         wait_for(record)
         wait_for(child_record)
@@ -541,7 +546,7 @@ def main() -> int:
             "schema file drift",
         )
         require(
-            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.3.2",
+            (registration_dir / "runtime_version").read_text(encoding="utf-8").strip() == "0.4.0",
             "runtime version drift",
         )
         hook_path = runtime_dir / "worker-subagent-contract.zsh"
@@ -610,14 +615,14 @@ def main() -> int:
             "a second live worker launched for the same thread/root",
         )
 
-        # Admission is global only for busy assignments: two distinct roots
-        # succeed, a third is refused, and a dead active record remains an
-        # orphaned root block without consuming a busy slot.
+        # Admission is HOME-scoped, not profile-scoped. Normal launches reserve
+        # root and one of two slots before READY, then assignment atomically
+        # upgrades the reservation to access:write.
         admission_roots = [base / f"admission root {index}" for index in range(1, 4)]
         for admission_root in admission_roots:
             admission_root.mkdir()
-        admission_workers: list[tuple[subprocess.Popen[bytes], int, dict, dict[str, str]]] = []
-        for index, admission_root in enumerate(admission_roots):
+        admission_workers: list[tuple[subprocess.Popen[bytes], int, dict[str, object], dict[str, str]]] = []
+        for index, admission_root in enumerate(admission_roots[:2]):
             admission_env = env.copy()
             admission_env["CODEX_THREAD_ID"] = f"admission-thread-{index}"
             admission_env["CODEX_HOME"] = str(base / f"codex-profile-{index}")
@@ -627,22 +632,81 @@ def main() -> int:
                 [zsh, str(LAUNCHER), str(admission_root)], cwd=admission_root, env=admission_env
             )
             admission_output = read_pty(admission_worker, admission_master, needle="CODEX_PTY_WORKER_READY")
-            admission_ready = json.loads(
-                next(line for line in admission_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
-                .split("CODEX_PTY_WORKER_READY ", 1)[1].strip()
-            )
+            admission_ready = json.loads(next(line for line in admission_output.splitlines() if "CODEX_PTY_WORKER_READY " in line).split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
+            require(admission_ready["admission_state"] == "reserved", "normal launch did not reserve admission")
             admission_workers.append((admission_worker, admission_master, admission_ready, admission_env))
-        first_admission = run_assign(zsh, admission_roots[0], admission_workers[0][2]["uuid"], "stage-one", admission_workers[0][3])
-        second_admission = run_assign(zsh, admission_roots[1], admission_workers[1][2]["uuid"], "stage-two", admission_workers[1][3])
-        duplicate_admission = run_assign(zsh, admission_roots[0], admission_workers[0][2]["uuid"], "stage-one", admission_workers[0][3])
-        invalid_max_env = admission_workers[2][3].copy()
-        invalid_max_env["CODEX_CLAUDE_MAX_BUSY_WORKERS"] = "3"
-        invalid_max = run_assign(zsh, admission_roots[2], admission_workers[2][2]["uuid"], "stage-three", invalid_max_env)
-        third_admission = run_assign(zsh, admission_roots[2], admission_workers[2][2]["uuid"], "stage-three", admission_workers[2][3])
-        require(first_admission.returncode == 0 and second_admission.returncode == 0, "two busy assignments were not admitted")
+
+        reserved_status = subprocess.run(
+            [zsh, str(TOGGLE), "status"], env=env, text=True, capture_output=True, check=False
+        )
+        require(
+            reserved_status.returncode == 0
+            and "busy=2/2" in reserved_status.stdout
+            and "active=0" in reserved_status.stdout
+            and "reserved=2" in reserved_status.stdout,
+            f"reserved admission status drift: {reserved_status}",
+        )
+
+        # Unknown assignment versions represent a mixed or future runtime. They
+        # must stop admission/status rather than be ignored as free capacity.
+        unknown_uuid = str(uuid.uuid4())
+        unknown_assignment = home / ".codex/claude-pty-assignments" / f"{unknown_uuid}.json"
+        unknown_assignment.write_text(
+            json.dumps(
+                {
+                    "version": 99,
+                    "state": "active",
+                    "access": "write",
+                    "session_uuid": unknown_uuid,
+                    "root": str(admission_roots[2]),
+                    "task_id": "future-stage",
+                    "thread_hash": "0" * 64,
+                    "assigned_at": "fixture",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        unknown_assignment.chmod(0o600)
+        try:
+            mixed_version_status = subprocess.run(
+                [zsh, str(TOGGLE), "status"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            unknown_assignment.unlink()
+        require(
+            mixed_version_status.returncode == 70
+            and "CLAUDE_STATUS_ASSIGNMENT_STATE_AMBIGUOUS" in mixed_version_status.stderr,
+            "unknown assignment version was treated as free capacity",
+        )
+
+        third_env = env.copy()
+        third_env.update({
+            "CODEX_THREAD_ID": "admission-thread-2",
+            "CODEX_HOME": str(base / "profile-2"),
+            "FAKE_CLAUDE_RECORD": str(base / "admission-2.json"),
+        })
+        third_env.pop("FAKE_CLAUDE_CHILD_PID", None)
+        blocked_third, blocked_third_master = start_pty(
+            [zsh, str(LAUNCHER), str(admission_roots[2])], cwd=admission_roots[2], env=third_env
+        )
+        blocked_third_output = read_pty(blocked_third, blocked_third_master, timeout=10)
+        blocked_third.wait(timeout=5)
+        os.close(blocked_third_master)
+        require(
+            blocked_third.returncode == 77 and "CLAUDE_LAUNCH_CAPACITY_BUSY" in blocked_third_output,
+            f"third window was created before capacity admission: {blocked_third_output}",
+        )
+
+        first_admission = run_assign(zsh, admission_roots[0], str(admission_workers[0][2]["uuid"]), "stage-one", admission_workers[0][3])
+        second_admission = run_assign(zsh, admission_roots[1], str(admission_workers[1][2]["uuid"]), "stage-two", admission_workers[1][3])
+        duplicate_admission = run_assign(zsh, admission_roots[0], str(admission_workers[0][2]["uuid"]), "stage-one", admission_workers[0][3])
+        require(first_admission.returncode == 0 and second_admission.returncode == 0, "two cross-profile busy assignments were not admitted")
         require(duplicate_admission.returncode == 79 and "CLAUDE_ASSIGN_DUPLICATE_ACTIVE" in duplicate_admission.stderr, "duplicate assignment could resend a prompt")
-        require(invalid_max.returncode == 64 and "INVALID_MAX_BUSY_WORKERS" in invalid_max.stderr, "a process raised the shared busy ceiling above two")
-        require(third_admission.returncode == 77 and "CLAUDE_ASSIGN_CAPACITY_BUSY" in third_admission.stderr, "third busy assignment was admitted")
         busy_status = subprocess.run(
             [zsh, str(TOGGLE), "status"], env=env, text=True, capture_output=True, check=False
         )
@@ -650,6 +714,7 @@ def main() -> int:
             busy_status.returncode == 0
             and "busy=2/2" in busy_status.stdout
             and "active=2" in busy_status.stdout
+            and "reserved=0" in busy_status.stdout
             and "orphaned=0" in busy_status.stdout
             and "blocked_roots=2" in busy_status.stdout,
             f"shared busy status drift: {busy_status}",
@@ -668,7 +733,74 @@ def main() -> int:
         admission_workers[0][0].terminate()
         admission_workers[0][0].wait(timeout=5)
         os.close(admission_workers[0][1])
-        after_orphan = run_assign(zsh, admission_roots[2], admission_workers[2][2]["uuid"], "stage-three", admission_workers[2][3])
+        third_worker, third_master = start_pty(
+            [zsh, str(LAUNCHER), str(admission_roots[2])], cwd=admission_roots[2], env=third_env
+        )
+        third_output = read_pty(third_worker, third_master, needle="CODEX_PTY_WORKER_READY")
+        third_ready = json.loads(
+            next(line for line in third_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+            .split("CODEX_PTY_WORKER_READY ", 1)[1]
+            .strip()
+        )
+        require(third_ready["admission_state"] == "reserved", "freed capacity did not admit a reservation")
+        admission_workers.append((third_worker, third_master, third_ready, third_env))
+
+        # Degraded durable identity is conservatively treated as occupied by
+        # assignment admission and ambiguous by status; it can never free a
+        # shared slot merely because the actual worker is dead.
+        first_registration = home / ".codex/claude-pty-sessions" / str(admission_workers[0][2]["uuid"])
+        first_group = first_registration / "process_group"
+        hidden_first_group = first_registration / ".hidden-process-group"
+        first_group.rename(hidden_first_group)
+        try:
+            degraded_admission = run_assign(
+                zsh,
+                admission_roots[2],
+                str(admission_workers[2][2]["uuid"]),
+                "stage-three",
+                admission_workers[2][3],
+            )
+            degraded_status = subprocess.run(
+                [zsh, str(TOGGLE), "status"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            hidden_first_group.rename(first_group)
+        require(
+            degraded_admission.returncode == 77
+            and "CLAUDE_ASSIGN_CAPACITY_BUSY" in degraded_admission.stderr,
+            f"degraded identity freed assignment capacity: {degraded_admission}",
+        )
+        require(
+            degraded_status.returncode == 70
+            and "CLAUDE_STATUS_LEASE_STATE_AMBIGUOUS" in degraded_status.stderr,
+            f"status treated degraded identity as free capacity: {degraded_status}",
+        )
+
+        invalid_max_env = admission_workers[2][3].copy()
+        invalid_max_env["CODEX_CLAUDE_MAX_BUSY_WORKERS"] = "3"
+        invalid_max = run_assign(
+            zsh,
+            admission_roots[2],
+            str(admission_workers[2][2]["uuid"]),
+            "stage-three",
+            invalid_max_env,
+        )
+        require(
+            invalid_max.returncode == 64 and "INVALID_MAX_BUSY_WORKERS" in invalid_max.stderr,
+            "a process raised the shared busy ceiling above two",
+        )
+
+        after_orphan = run_assign(
+            zsh,
+            admission_roots[2],
+            str(admission_workers[2][2]["uuid"]),
+            "stage-three",
+            admission_workers[2][3],
+        )
         require(after_orphan.returncode == 0, "dead active record still consumed busy capacity")
         orphan_status = subprocess.run(
             [zsh, str(TOGGLE), "status"], env=env, text=True, capture_output=True, check=False
@@ -677,20 +809,142 @@ def main() -> int:
             orphan_status.returncode == 0
             and "busy=2/2" in orphan_status.stdout
             and "active=3" in orphan_status.stdout
+            and "reserved=0" in orphan_status.stdout
             and "orphaned=1" in orphan_status.stdout
             and "blocked_roots=3" in orphan_status.stdout,
             f"orphan status drift: {orphan_status}",
         )
-        same_root_env = env.copy()
-        same_root_env["CODEX_THREAD_ID"] = "admission-other-thread"
-        same_root_env["FAKE_CLAUDE_RECORD"] = str(base / "admission-same-root.json")
-        same_root_env.pop("FAKE_CLAUDE_CHILD_PID", None)
-        same_root_worker, same_root_master = start_pty([zsh, str(LAUNCHER), str(admission_roots[0])], cwd=admission_roots[0], env=same_root_env)
-        same_root_output = read_pty(same_root_worker, same_root_master, needle="CODEX_PTY_WORKER_READY")
-        same_root_ready = json.loads(next(line for line in same_root_output.splitlines() if "CODEX_PTY_WORKER_READY " in line).split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
-        root_conflict = run_assign(zsh, admission_roots[0], same_root_ready["uuid"], "other-stage", same_root_env)
-        require(root_conflict.returncode == 77 and "CLAUDE_ASSIGN_ROOT_BUSY" in root_conflict.stderr, "orphaned assignment did not block its root")
-        same_root_worker.terminate(); same_root_worker.wait(timeout=5); os.close(same_root_master)
+        # Foreign active write custody is never cleared automatically. An
+        # operator can reconcile only a proven-dead exact tuple through a
+        # preview/token/apply flow; the worktree and registration remain.
+        operator_env = env.copy()
+        operator_env["CODEX_THREAD_ID"] = "operator-reconciliation-thread"
+        blocked_orphan, blocked_orphan_master = start_pty(
+            [zsh, str(LAUNCHER), str(admission_roots[0])],
+            cwd=admission_roots[0],
+            env=operator_env,
+        )
+        blocked_orphan_output = read_pty(blocked_orphan, blocked_orphan_master, timeout=10)
+        blocked_orphan.wait(timeout=5)
+        os.close(blocked_orphan_master)
+        require(
+            blocked_orphan.returncode == 77
+            and "CLAUDE_LAUNCH_ROOT_ORPHANED" in blocked_orphan_output,
+            "normal launch bypassed an orphaned root",
+        )
+        live_reconcile = subprocess.run(
+            [
+                zsh,
+                str(RECONCILE_ORPHAN),
+                str(admission_roots[1]),
+                str(admission_workers[1][2]["uuid"]),
+                "stage-two",
+            ],
+            cwd=admission_roots[1],
+            env=operator_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            live_reconcile.returncode == 75
+            and "CLAUDE_ORPHAN_WORKER_STILL_LIVE" in live_reconcile.stderr,
+            "operator reconciliation could abandon a live worker",
+        )
+        orphan_uuid = str(admission_workers[0][2]["uuid"])
+        orphan_sentinel = admission_roots[0] / "preserve-me.txt"
+        orphan_sentinel.write_text("preserved\n", encoding="utf-8")
+        mismatched_reconcile = subprocess.run(
+            [zsh, str(RECONCILE_ORPHAN), str(admission_roots[0]), orphan_uuid, "wrong-stage"],
+            cwd=admission_roots[0],
+            env=operator_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            mismatched_reconcile.returncode == 77
+            and "CLAUDE_ORPHAN_ASSIGNMENT_MISMATCH" in mismatched_reconcile.stderr,
+            "operator reconciliation did not require the exact task tuple",
+        )
+        orphan_preview = subprocess.run(
+            [zsh, str(RECONCILE_ORPHAN), str(admission_roots[0]), orphan_uuid, "stage-one"],
+            cwd=admission_roots[0],
+            env=operator_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(orphan_preview.returncode == 0, f"orphan preview failed: {orphan_preview}")
+        orphan_preview_payload = marker_payload(orphan_preview, "CODEX_PTY_ORPHAN_PREVIEW")
+        orphan_token = orphan_preview_payload["confirmation_token"]
+        require(
+            orphan_preview_payload["worker_state"] == "proven_dead"
+            and orphan_preview_payload["retirement_exists"] is False,
+            f"orphan preview did not prove the bounded transition: {orphan_preview_payload}",
+        )
+        orphan_record = home / ".codex/claude-pty-assignments" / f"{orphan_uuid}.json"
+        require(
+            json.loads(orphan_record.read_text(encoding="utf-8"))["state"] == "active",
+            "orphan preview mutated custody",
+        )
+        wrong_confirmation = subprocess.run(
+            [
+                zsh,
+                str(RECONCILE_ORPHAN),
+                str(admission_roots[0]),
+                orphan_uuid,
+                "stage-one",
+                "--apply",
+                "0" * 64,
+            ],
+            cwd=admission_roots[0],
+            env=operator_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            wrong_confirmation.returncode == 77
+            and "CLAUDE_ORPHAN_CONFIRMATION_MISMATCH" in wrong_confirmation.stderr,
+            "orphan reconciliation accepted a stale or fabricated token",
+        )
+        orphan_apply = subprocess.run(
+            [
+                zsh,
+                str(RECONCILE_ORPHAN),
+                str(admission_roots[0]),
+                orphan_uuid,
+                "stage-one",
+                "--apply",
+                orphan_token,
+            ],
+            cwd=admission_roots[0],
+            env=operator_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(orphan_apply.returncode == 0, f"orphan reconciliation failed: {orphan_apply}")
+        orphan_result = marker_payload(orphan_apply, "CODEX_PTY_ORPHAN_RECONCILED")
+        require(
+            orphan_result["state"] == "abandoned_orphan"
+            and orphan_sentinel.read_text(encoding="utf-8") == "preserved\n"
+            and json.loads(orphan_record.read_text(encoding="utf-8"))["state"] == "abandoned_orphan",
+            f"orphan reconciliation altered worktree state or failed to terminalize: {orphan_result}",
+        )
+        abandoned_resume, abandoned_resume_master = start_pty(
+            [zsh, str(LAUNCHER), str(admission_roots[0]), "--resume", orphan_uuid],
+            cwd=admission_roots[0],
+            env=admission_workers[0][3],
+        )
+        abandoned_resume_output = read_pty(abandoned_resume, abandoned_resume_master, timeout=10)
+        abandoned_resume.wait(timeout=5)
+        os.close(abandoned_resume_master)
+        require(
+            abandoned_resume.returncode == 77 and "CLAUDE_RESUME_RETIRED" in abandoned_resume_output,
+            "operator-reconciled orphan was resumable",
+        )
         for admission_worker, admission_master, _, _ in admission_workers[1:]:
             admission_worker.terminate(); admission_worker.wait(timeout=5); os.close(admission_master)
 
@@ -851,6 +1105,15 @@ def main() -> int:
                 "CODEX_PTY_WORKER_READY" in bystander_output,
                 f"a standalone Claude in the same root blocked a launch: {bystander_output}",
             )
+            bystander_ready = json.loads(
+                next(line for line in bystander_output.splitlines() if "CODEX_PTY_WORKER_READY " in line)
+                .split("CODEX_PTY_WORKER_READY ", 1)[1]
+                .strip()
+            )
+            require(
+                bystander_ready["admission_state"] == "reserved",
+                "normal standalone-adjacent launch was unreserved",
+            )
             require(
                 "CLAUDE_CWD_CONFLICT" not in bystander_output,
                 "launcher still reports a standalone cwd conflict",
@@ -858,6 +1121,13 @@ def main() -> int:
             bystander.terminate()
             bystander.wait(timeout=5)
             os.close(bystander_master)
+            bystander_assignment = (
+                home / ".codex/claude-pty-assignments" / f"{bystander_ready['uuid']}.json"
+            )
+            require(
+                json.loads(bystander_assignment.read_text(encoding="utf-8"))["state"] == "reserved",
+                "dead unassigned worker lost its durable reservation before reconciliation",
+            )
             require(process_is_live(standalone.pid), "launcher signalled a standalone Claude process")
         finally:
             if standalone.poll() is None:
@@ -895,6 +1165,26 @@ def main() -> int:
         require(lease.is_dir(), "session-keyed lease was not restored")
         # The gate is driven only by completed compactions. It stores one
         # content-free line per event and one acknowledged generation.
+        first_assignment = run_assign(zsh, repo, worker_uuid, "runtime-test", env)
+        require(first_assignment.returncode == 0, f"fresh assignment was refused: {first_assignment}")
+        require(
+            json.loads(bystander_assignment.read_text(encoding="utf-8"))["state"] == "cancelled_unassigned"
+            and (
+                home
+                / ".codex/claude-pty-sessions"
+                / str(bystander_ready["uuid"])
+                / "retirement.json"
+            ).is_file(),
+            "dead access:none reservation was not safely tombstoned during admission",
+        )
+        stage_assignment = json.loads(
+            (registration_dir / "health/assignment.json").read_text(encoding="utf-8")
+        )
+        require(
+            stage_assignment["task_id"] == "runtime-test"
+            and stage_assignment["assigned_at_epoch"] > 0,
+            f"stage assignment baseline drift: {stage_assignment}",
+        )
         summary_sentinel = "SUMMARY-SENTINEL-MUST-NOT-PERSIST"
         compact_payload = json.dumps(
             {
@@ -929,20 +1219,8 @@ def main() -> int:
 
         gated = run_assign(zsh, repo, worker_uuid, "post-compact-task", env)
         require(
-            gated.returncode == 76 and "CLAUDE_ASSIGN_DECISION_REQUIRED" in gated.stderr,
-            f"compaction threshold did not close the normal path: {gated}",
-        )
-        decision = marker_payload(gated, "CODEX_PTY_WORKER_DECISION")
-        require(decision["compactions"] == 2 and decision["threshold"] == 2, f"gate marker drift: {decision}")
-
-        continued = run_assign(
-            zsh, repo, worker_uuid, "post-compact-task", env, continue_context=True
-        )
-        require(continued.returncode == 0, f"context continuation was refused: {continued}")
-        continued_payload = marker_payload(continued, "CODEX_PTY_WORKER_ASSIGN")
-        require(
-            continued_payload["continuation_scope"] == "until_next_compaction",
-            f"continuation scope drift: {continued_payload}",
+            gated.returncode == 77 and "CLAUDE_ASSIGN_SESSION_BUSY" in gated.stderr,
+            f"active stage accepted a second task: {gated}",
         )
         same_generation = run_assign(zsh, repo, worker_uuid, "related-task", env)
         require(
@@ -994,7 +1272,7 @@ def main() -> int:
         hidden_lease = lease.parent / f".hidden-{lease.name}"
         lease.rename(hidden_lease)
         live_retire = subprocess.run(
-            [zsh, str(RETIRE), str(repo), worker_uuid, "post-compact-task"],
+            [zsh, str(RETIRE), str(repo), worker_uuid, "runtime-test"],
             cwd=repo,
             env=env,
             text=True,
@@ -1011,7 +1289,7 @@ def main() -> int:
         require(process_is_live(child_pid), "fake descendant did not survive the parent for custody testing")
 
         descendant_retire = subprocess.run(
-            [zsh, str(RETIRE), str(repo), worker_uuid, "post-compact-task"],
+            [zsh, str(RETIRE), str(repo), worker_uuid, "runtime-test"],
             cwd=repo,
             env=env,
             text=True,
@@ -1198,7 +1476,9 @@ def main() -> int:
         other_env = env.copy()
         other_env["FAKE_CLAUDE_RECORD"] = str(other_record)
         other_env["FAKE_CLAUDE_CHILD_PID"] = str(other_child_record)
-        other_worker, other_master = start_pty([zsh, str(LAUNCHER), str(repo)], cwd=repo, env=other_env)
+        other_worker, other_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--idle"], cwd=repo, env=other_env
+        )
         other_output = read_pty(other_worker, other_master, needle="CODEX_PTY_WORKER_READY")
         require("CODEX_PTY_WORKER_READY" in other_output, f"second worker did not become ready: {other_output}")
         wait_for(other_record)
@@ -1217,7 +1497,7 @@ def main() -> int:
         other_lease = Path(other_ready["lease"])
         require(other_uuid != worker_uuid and other_lease != lease, "sibling worker did not get a distinct lease")
         overlap_retire = subprocess.run(
-            [zsh, str(RETIRE), str(repo), worker_uuid, "post-compact-task"],
+            [zsh, str(RETIRE), str(repo), worker_uuid, "runtime-test"],
             cwd=repo,
             env=env,
             text=True,
@@ -1258,7 +1538,7 @@ def main() -> int:
 
         subprocess.run([zsh, str(TOGGLE), "on"], env=env, check=True, capture_output=True)
         retired = subprocess.run(
-            [zsh, str(RETIRE), str(repo), worker_uuid, "post-compact-task"],
+            [zsh, str(RETIRE), str(repo), worker_uuid, "runtime-test"],
             cwd=repo,
             env=env,
             text=True,
@@ -1267,7 +1547,7 @@ def main() -> int:
         )
         require(retired.returncode == 0, f"retirement was not idempotent for the same task: {retired.stderr}")
         require("CODEX_PTY_WORKER_RETIRED" in retired.stdout, "retirement marker missing")
-        retired_assign = run_assign(zsh, repo, worker_uuid, "post-compact-task", env)
+        retired_assign = run_assign(zsh, repo, worker_uuid, "runtime-test", env)
         require(
             retired_assign.returncode == 77 and "CLAUDE_ASSIGN_RETIRED" in retired_assign.stderr,
             "a terminal assignment was assignable again",
@@ -1316,7 +1596,7 @@ def main() -> int:
         sibling_env["CODEX_THREAD_ID"] = "rotation-sibling-thread"
         sibling_env["FAKE_CLAUDE_RECORD"] = str(base / "rotation sibling record.json")
         sibling_worker, sibling_master = start_pty(
-            [zsh, str(LAUNCHER), str(rotation_repo)], cwd=rotation_repo, env=sibling_env
+            [zsh, str(LAUNCHER), str(rotation_repo), "--idle"], cwd=rotation_repo, env=sibling_env
         )
         sibling_output = read_pty(sibling_worker, sibling_master, needle="CODEX_PTY_WORKER_READY")
         require(
@@ -1356,6 +1636,13 @@ def main() -> int:
         sibling_worker.terminate()
         sibling_worker.wait(timeout=5)
         os.close(sibling_master)
+        sibling_rotated = run_rotate(
+            zsh, rotation_repo, sibling_uuid, "sibling-task", sibling_env
+        )
+        require(
+            sibling_rotated.returncode == 0,
+            f"sibling assignment was not released before successor admission: {sibling_rotated}",
+        )
         rotation_record = marker_payload(rotated, "CODEX_PTY_WORKER_ROTATED")
         require(
             rotation_record["state"] == "rotated_context"
@@ -1395,6 +1682,10 @@ def main() -> int:
             and successor_ready["lineage_id"] == rotation_record["lineage_id"],
             f"successor lineage drift: {successor_ready}",
         )
+        successor_assignment = run_assign(
+            zsh, rotation_repo, str(successor_ready["uuid"]), "successor-task", successor_env
+        )
+        require(successor_assignment.returncode == 0, f"successor reservation was not assigned: {successor_assignment}")
         successor.terminate()
         successor.wait(timeout=5)
         os.close(successor_master)
@@ -1446,6 +1737,11 @@ def main() -> int:
             invalid_lineage.returncode == 77 and "CLAUDE_RESUME_LINEAGE_INVALID" in invalid_lineage_output,
             "successor resumed after its complete lineage was removed",
         )
+
+        successor_rotated = run_rotate(
+            zsh, rotation_repo, successor_uuid, "successor-task", successor_env
+        )
+        require(successor_rotated.returncode == 0, f"successor assignment was not released: {successor_rotated}")
 
         retry, retry_master = start_pty(
             [zsh, str(LAUNCHER), str(rotation_repo), "--successor-of", rotation_uuid],

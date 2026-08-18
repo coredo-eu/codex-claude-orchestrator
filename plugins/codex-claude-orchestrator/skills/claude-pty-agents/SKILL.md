@@ -46,6 +46,11 @@ Resolve this skill's directory, then check prerequisites and status:
 command -v claude jq zsh git
 ```
 
+Read status literally: `busy` is live active plus live reserved capacity;
+`active` and `reserved` are durable open records; `orphaned` is a proven-dead
+active writer; `stale_reserved` is a proven-dead reservation that ordinary
+admission may safely tombstone; and `blocked_roots` includes every open record.
+
 The file `$HOME/.codex/claude-pty-agents.disabled` is the sole ON/OFF state.
 Check it before every launch, resume, assignment, and PTY poll. Do not remove it
 unless the user explicitly asks to enable workers.
@@ -61,6 +66,14 @@ const worker = await tools.exec_command({
   tty: true,
 });
 ```
+
+A normal launch atomically reserves the canonical root and one shared busy slot
+before it emits `CODEX_PTY_WORKER_READY`; assignment upgrades that durable
+record from `access:none` to `access:write`. A root conflict, active orphan, or
+full two-worker capacity is therefore rejected before Claude is started. Never
+use `--idle` to bypass this admission path. That explicit flag exists only for
+operator diagnostics, compatibility testing, or deliberate prewarming; it
+creates an unreserved process and is not part of this skill's routine workflow.
 
 The launcher requires `CODEX_THREAD_ID` and defaults the parent to
 `claude-sonnet-5` at `high` effort. Override only the parent with non-secret
@@ -112,14 +125,16 @@ lease from the JSON object after `CODEX_PTY_WORKER_READY`. Reuse only that
 current-thread mapping.
 Never use bare `claude -c`, an unqualified `--resume`, or another session.
 
-## Ownership is the only concurrency boundary
+## Ownership and admission boundaries
 
-The launcher permits at most two busy assignments per HOME by default
-(`CODEX_CLAUDE_MAX_BUSY_WORKERS` may be only `1` or `2`), serializes active
-write-capable assignments by canonical root, and rejects a second live worker
-for the same current thread/root at launch. Idle PTYs consume no busy capacity;
-an active record for a dead named worker remains an orphaned root block until
-explicit terminal reconciliation.
+The launcher permits at most two live admitted workers per HOME by default
+(`CODEX_CLAUDE_MAX_BUSY_WORKERS` may be only `1` or `2`) and one normal
+reservation or active write assignment per canonical root. A live reservation
+counts against capacity before a task receives write access. If its exact
+registered process dies first, the runtime may preserve a
+`cancelled_unassigned` tombstone and release it automatically because it never
+held write custody. An active record for a dead named worker remains an orphaned
+root block and is never released by ordinary launch or assignment.
 
 The boundary is control of another principal's session. Resume, assignment,
 successor lineage, rotation, and native-fallback retirement all require the
@@ -133,9 +148,10 @@ signalled, or discovered by process name. Lease or registration state that is
 malformed, contradictory, or too incomplete to prove death fails closed rather
 than reading as a dead worker.
 
-Concurrent same-root workers still share one worktree, so avoid giving two of
-them overlapping edit scope; that is a task-assignment judgment for Codex, not a
-launcher restriction.
+An explicitly unreserved `--idle` worker can coexist with another worker and
+does not count against capacity until legacy-compatible assignment admission.
+Do not assign it to evade a launch rejection. Any such same-root process still
+shares one worktree, so one edit-capable owner remains mandatory.
 
 Resume a dead, registered worker only after validating the same thread/root and
 confirming no native transfer:
@@ -353,3 +369,30 @@ If a PTY handle is lost, do not guess one. Recover only from the exact durable
 current-thread registration after the prior process is proven dead. If identity
 cannot be proven, keep native agents read-only or use an isolated worktree until
 the ambiguity is resolved.
+
+An orphaned active assignment is a separate operator decision, not normal
+recovery and not an automatic response to capacity pressure. Never run the
+following flow unless the user explicitly authorizes abandoning the exact
+`root + UUID + task-id` after seeing its bounded effects. First preview without
+mutation:
+
+```text
+<skill-dir>/scripts/reconcile-orphan.zsh <root> <uuid> <task-id>
+```
+
+The preview succeeds only when the durable tuple and registration match and the
+named worker is proven dead. It returns a confirmation token and states that the
+flow writes a retirement tombstone, terminalizes the assignment, and preserves
+the worktree and registration; it sends no signal, reads no transcript, adopts
+no session, and deletes no worktree file. Apply only the unchanged preview and
+explicit authorization:
+
+```text
+<skill-dir>/scripts/reconcile-orphan.zsh <root> <uuid> <task-id> \
+  --apply <confirmation-token>
+```
+
+After `CODEX_PTY_ORPHAN_RECONCILED`, inspect the preserved worktree and resolve
+any unknown partial edits before transferring write custody. A live or
+ambiguously identified worker, mismatched tuple, changed token, conflicting
+retirement, or malformed shared state fails closed.

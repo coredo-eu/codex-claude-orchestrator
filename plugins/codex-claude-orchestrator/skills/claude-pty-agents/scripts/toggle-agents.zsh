@@ -21,7 +21,7 @@ cco_init
 
 if [[ "$action" == "status" ]]; then
   if [[ ! -e "$CCO_STATE_DIR" && ! -L "$CCO_STATE_DIR" ]]; then
-    print -- "Claude PTY agents: ON — busy=0/2 active=0 orphaned=0 blocked_roots=0 live_workers=0 legacy_stale_leases=0"
+    print -- "Claude PTY agents: ON — busy=0/2 active=0 reserved=0 orphaned=0 stale_reserved=0 blocked_roots=0 live_workers=0 legacy_stale_leases=0"
     exit 0
   fi
   [[ -d "$CCO_STATE_DIR" && ! -L "$CCO_STATE_DIR" ]] || cco_die 70 "CLAUDE_STATUS_STATE_AMBIGUOUS"
@@ -41,20 +41,30 @@ trap 'cleanup_gate; exit 130' INT
 trap 'cleanup_gate; exit 143' TERM
 
 if [[ "$action" == "status" ]]; then
-  assignment_records=("${(@f)$(cco_active_assignments)}") || cco_die 70 "CLAUDE_STATUS_ASSIGNMENT_STATE_AMBIGUOUS"
-  active_count=0; busy_count=0; orphaned_count=0
+  assignment_records=("${(@f)$(cco_open_assignments)}") || cco_die 70 "CLAUDE_STATUS_ASSIGNMENT_STATE_AMBIGUOUS"
+  active_count=0; reserved_count=0; busy_count=0; orphaned_count=0; stale_reserved_count=0
   typeset -A active_roots
   for assignment_record in "${assignment_records[@]}"; do
     [[ -n "$assignment_record" ]] || continue
+    assignment_state=$("$CCO_JQ" -r '.state' "$assignment_record")
     assignment_root=$("$CCO_JQ" -r '.root' "$assignment_record")
     [[ -z "${active_roots[$assignment_root]:-}" ]] || cco_die 70 "CLAUDE_STATUS_DUPLICATE_ROOT_ASSIGNMENT"
-    active_roots[$assignment_root]=1; (( active_count += 1 ))
+    active_roots[$assignment_root]=1
+    if [[ "$assignment_state" == "active" ]]; then
+      (( active_count += 1 ))
+    else
+      (( reserved_count += 1 ))
+    fi
     assignment_live_status=0
     cco_assignment_worker_live "$assignment_record" || assignment_live_status=$?
     if (( assignment_live_status == 0 )); then
       (( busy_count += 1 ))
     elif (( assignment_live_status == 1 )); then
-      (( orphaned_count += 1 ))
+      if [[ "$assignment_state" == "active" ]]; then
+        (( orphaned_count += 1 ))
+      else
+        (( stale_reserved_count += 1 ))
+      fi
     else
       cco_die 70 "CLAUDE_STATUS_LIVENESS_UNPROVEN"
     fi
@@ -88,7 +98,7 @@ if [[ "$action" == "status" ]]; then
     done
   fi
   state="ON"; [[ ! -e "$CCO_DISABLED_MARKER" ]] || state="OFF"
-  print -- "Claude PTY agents: $state — busy=$busy_count/2 active=$active_count orphaned=$orphaned_count blocked_roots=${#active_roots} live_workers=$live_count legacy_stale_leases=$legacy_stale_count"
+  print -- "Claude PTY agents: $state — busy=$busy_count/2 active=$active_count reserved=$reserved_count orphaned=$orphaned_count stale_reserved=$stale_reserved_count blocked_roots=${#active_roots} live_workers=$live_count legacy_stale_leases=$legacy_stale_count"
   exit 0
 fi
 

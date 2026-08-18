@@ -36,8 +36,14 @@ max_busy=${CODEX_CLAUDE_MAX_BUSY_WORKERS:-2}
 cco_acquire_gate || cco_die $? "CLAUDE_GATE_BUSY: $CCO_GATE_LOCK"
 gate_held=1
 ack_tmp=""
+assignment_tmp=""
+health_assignment_tmp=""
+health_cursor_tmp=""
 cleanup() {
   [[ -n "${ack_tmp:-}" && -e "$ack_tmp" ]] && /bin/rm -f -- "$ack_tmp"
+  [[ -n "${assignment_tmp:-}" && -e "$assignment_tmp" ]] && /bin/rm -f -- "$assignment_tmp"
+  [[ -n "${health_assignment_tmp:-}" && -e "$health_assignment_tmp" ]] && /bin/rm -f -- "$health_assignment_tmp"
+  [[ -n "${health_cursor_tmp:-}" && -e "$health_cursor_tmp" ]] && /bin/rm -f -- "$health_cursor_tmp"
   if (( ${gate_held:-0} == 1 )); then
     cco_release_gate
     gate_held=0
@@ -66,24 +72,42 @@ lease=$(cco_session_lease "$session_uuid" "$path_hash") || \
 cco_lease_is_live "$lease" || \
   cco_die 75 "CLAUDE_ASSIGN_WORKER_NOT_LIVE: uuid=$session_uuid root=$root"
 
-# Busy capacity counts only live assigned workers. A dead active record is an
-# orphan: it blocks its root but must be terminalized explicitly and never
-# consumes a shared busy slot.
+# Launch normally created an access:none reservation under this same gate. The
+# gate below upgrades exactly that record, so root and capacity cannot change
+# between window creation and assignment. Legacy unreserved workers retain a
+# fail-closed admission path for upgrade compatibility.
 cco_assignment_root_ready || cco_die 70 "CLAUDE_ASSIGNMENT_STATE_AMBIGUOUS"
-assignment_records=("${(@f)$(cco_active_assignments)}") || cco_die 70 "CLAUDE_ASSIGNMENT_STATE_AMBIGUOUS"
+assignment_records=("${(@f)$(cco_open_assignments)}") || cco_die 70 "CLAUDE_ASSIGNMENT_STATE_AMBIGUOUS"
 busy_count=0
+own_reservation=""
 for assignment_record in "${assignment_records[@]}"; do
   [[ -n "$assignment_record" ]] || continue
+  assignment_state=$("$CCO_JQ" -r '.state' "$assignment_record")
   assignment_root=$("$CCO_JQ" -r '.root' "$assignment_record")
   assignment_uuid=$("$CCO_JQ" -r '.session_uuid' "$assignment_record")
-  assignment_task=$("$CCO_JQ" -r '.task_id' "$assignment_record")
+  assignment_task=$("$CCO_JQ" -r '.task_id // empty' "$assignment_record")
   if [[ "$assignment_uuid" == "$session_uuid" ]]; then
-    [[ "$assignment_task" == "$task_id" ]] && cco_die 79 "CLAUDE_ASSIGN_DUPLICATE_ACTIVE: uuid=$session_uuid task_id=$task_id"
-    cco_die 77 "CLAUDE_ASSIGN_SESSION_BUSY: uuid=$session_uuid task_id=$assignment_task"
+    if [[ "$assignment_state" == "active" ]]; then
+      [[ "$assignment_task" == "$task_id" ]] && cco_die 79 "CLAUDE_ASSIGN_DUPLICATE_ACTIVE: uuid=$session_uuid task_id=$task_id"
+      cco_die 77 "CLAUDE_ASSIGN_SESSION_BUSY: uuid=$session_uuid task_id=$assignment_task"
+    fi
+    cco_assignment_identity_matches "$assignment_record" "$session_uuid" "$root" "$thread_hash" || \
+      cco_die 77 "CLAUDE_ASSIGN_RESERVATION_OWNERSHIP_UNPROVEN: uuid=$session_uuid root=$root"
+    own_reservation="$assignment_record"
+    continue
   fi
-  [[ "$assignment_root" != "$root" ]] || cco_die 77 "CLAUDE_ASSIGN_ROOT_BUSY: root=$root uuid=$assignment_uuid task_id=$assignment_task"
   assignment_live_status=0
   cco_assignment_worker_live "$assignment_record" || assignment_live_status=$?
+  if [[ "$assignment_state" == "reserved" && $assignment_live_status -eq 1 ]]; then
+    cco_reconcile_dead_reservation "$assignment_record" || \
+      cco_die 70 "CLAUDE_ASSIGN_RESERVATION_RECONCILE_FAILED: uuid=$assignment_uuid root=$assignment_root"
+    continue
+  fi
+  if [[ "$assignment_root" == "$root" ]]; then
+    [[ "$assignment_state" == "active" ]] && \
+      cco_die 77 "CLAUDE_ASSIGN_ROOT_BUSY: root=$root uuid=$assignment_uuid task_id=$assignment_task"
+    cco_die 77 "CLAUDE_ASSIGN_ROOT_RESERVED: root=$root uuid=$assignment_uuid"
+  fi
   if (( assignment_live_status == 0 )); then
     (( busy_count += 1 ))
   elif (( assignment_live_status != 1 )); then
@@ -154,18 +178,28 @@ assign_json=$("$CCO_JQ" -cn \
   '{uuid:$uuid,root:$root,task_id:$task_id,context_state:$context_state,
     continuation_scope:$continuation_scope,compactions:$compactions,threshold:$threshold}')
 assignment_record="$CCO_ASSIGNMENT_ROOT/$session_uuid.json"
-[[ ! -e "$assignment_record" && ! -L "$assignment_record" ]] || cco_die 77 "CLAUDE_ASSIGN_RECORD_EXISTS: uuid=$session_uuid"
+if [[ -z "$own_reservation" ]]; then
+  [[ ! -e "$assignment_record" && ! -L "$assignment_record" ]] || cco_die 77 "CLAUDE_ASSIGN_RECORD_EXISTS: uuid=$session_uuid"
+else
+  [[ "$own_reservation" == "$assignment_record" ]] || cco_die 70 "CLAUDE_ASSIGN_RESERVATION_PATH_AMBIGUOUS: uuid=$session_uuid"
+fi
 assignment_tmp=$(mktemp "$CCO_ASSIGNMENT_ROOT/.assignment.XXXXXX") || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
 assigned_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 assigned_at_epoch=$(date +%s)
 [[ "$assigned_at_epoch" == <-> ]] || cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
-"$CCO_JQ" -cn \
-  --arg uuid "$session_uuid" --arg root "$root" --arg task_id "$task_id" --arg thread_hash "$thread_hash" \
-  --arg assigned_at "$assigned_at" \
-  '{version:1,state:"active",access:"write",session_uuid:$uuid,root:$root,task_id:$task_id,thread_hash:$thread_hash,assigned_at:$assigned_at}' > "$assignment_tmp" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
+if [[ -n "$own_reservation" ]]; then
+  "$CCO_JQ" --arg task_id "$task_id" --arg assigned_at "$assigned_at" \
+    '.state = "active" | .access = "write" | .task_id = $task_id | .assigned_at = $assigned_at' \
+    "$own_reservation" > "$assignment_tmp" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
+else
+  "$CCO_JQ" -cn \
+    --arg uuid "$session_uuid" --arg root "$root" --arg task_id "$task_id" --arg thread_hash "$thread_hash" \
+    --arg assigned_at "$assigned_at" \
+    '{version:2,state:"active",access:"write",session_uuid:$uuid,root:$root,task_id:$task_id,
+      thread_hash:$thread_hash,reserved_at:$assigned_at,assigned_at:$assigned_at}' > "$assignment_tmp" || \
+      cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
+fi
 
-health_assignment_tmp=""
-health_cursor_tmp=""
 transcript_baseline=0
 if [[ "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   health_dir="$registration/health"
@@ -199,8 +233,11 @@ if [[ "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
 fi
 if [[ "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   /bin/mv -- "$health_cursor_tmp" "$health_dir/transcript_cursor_bytes" && \
-    /bin/mv -- "$health_assignment_tmp" "$health_dir/assignment.json" || \
+    health_cursor_tmp="" && \
+    /bin/mv -- "$health_assignment_tmp" "$health_dir/assignment.json" && \
+    health_assignment_tmp="" || \
     cco_die 75 "CLAUDE_ASSIGN_STAGE_HEALTH_FAILED: uuid=$session_uuid"
 fi
 /bin/chmod 600 "$assignment_tmp" && /bin/mv -- "$assignment_tmp" "$assignment_record" || cco_die 75 "CLAUDE_ASSIGN_RECORD_ACQUIRE_FAILED"
+assignment_tmp=""
 print -r -- "CODEX_PTY_WORKER_ASSIGN $assign_json"

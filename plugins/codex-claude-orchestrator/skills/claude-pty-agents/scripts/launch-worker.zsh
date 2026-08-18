@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  print -u2 -- "usage: launch-worker.zsh <absolute-worktree-root> [--resume <worker-uuid> | --successor-of <rotated-uuid>]"
+  print -u2 -- "usage: launch-worker.zsh <absolute-worktree-root> [--idle | --resume <worker-uuid> | --successor-of <rotated-uuid>]"
   exit 64
 }
 
@@ -10,13 +10,17 @@ script_dir=${0:A:h}
 skill_dir=${script_dir:h}
 source "$script_dir/runtime-lib.zsh"
 
-(( $# == 1 || $# == 3 )) || usage
+(( $# == 1 || $# == 2 || $# == 3 )) || usage
 [[ "$1" == /* && -d "$1" ]] || usage
 
 mode="new"
+idle_mode=0
 session_uuid=""
 predecessor_uuid=""
-if (( $# == 3 )); then
+if (( $# == 2 )); then
+  [[ "$2" == "--idle" ]] || usage
+  idle_mode=1
+elif (( $# == 3 )); then
   cco_is_uuid "$3" || usage
   case "$2" in
     --resume)
@@ -73,6 +77,8 @@ stage_warn_cache=${CODEX_CLAUDE_STAGE_WARN_CACHE_READ_TOKENS:-131072}
 stage_max_cache=${CODEX_CLAUDE_STAGE_MAX_CACHE_READ_TOKENS:-262144}
 stage_warn_seconds=${CODEX_CLAUDE_STAGE_WARN_SECONDS:-600}
 stage_max_seconds=${CODEX_CLAUDE_STAGE_MAX_SECONDS:-1200}
+max_busy=${CODEX_CLAUDE_MAX_BUSY_WORKERS:-2}
+[[ "$max_busy" == <-> && "$max_busy" -ge 1 && "$max_busy" -le 2 ]] || cco_die 64 "INVALID_MAX_BUSY_WORKERS"
 runtime_schema="5"
 legacy_subagent_model=""
 
@@ -105,9 +111,10 @@ safe_base=$(print -rn -- "$base" | LC_ALL=C tr -cs 'A-Za-z0-9' '-' | sed 's/^-*/
 safe_base=${safe_base[1,28]}
 worker_name="codex-pty-${safe_base}-${path_hash[1,8]}-${session_uuid[1,8]}"
 registration="$CCO_SESSION_ROOT/$session_uuid"
-# The lease is keyed by this session UUID. Launch admission rejects another live
-# worker owned by this thread/root; assignment admission serializes writes by
-# canonical root. Foreign and standalone Claude processes are never inspected.
+# The lease is keyed by this session UUID. The global gate atomically reserves
+# root and shared capacity before READY; assignment later upgrades that
+# reservation from access:none to access:write. Foreign and standalone Claude
+# processes are never inspected.
 lease="$CCO_LEASE_ROOT/$session_uuid"
 
 context_threshold="$CCO_CONTEXT_COMPACTION_THRESHOLD"
@@ -275,9 +282,61 @@ if [[ "$mode" == "resume" ]]; then
   fi
 fi
 
-# Only this session's own lease can block this acquisition. The earlier
-# thread/root gate handles a sibling owned by this thread; other-thread workers
-# retain separate session-keyed leases and reach write serialization at assign.
+# Admission happens while the same global gate remains held through registration
+# and READY. A dead access:none reservation is safe to tombstone automatically;
+# a dead active assignment remains an orphaned root block until explicit
+# operator reconciliation. This closes the launch/assign race without ever
+# releasing another thread's write custody.
+reservation_needed=0
+if (( idle_mode == 0 )); then
+  cco_assignment_root_ready || cco_die 70 "CLAUDE_LAUNCH_ASSIGNMENT_STATE_AMBIGUOUS"
+  assignment_records=("${(@f)$(cco_open_assignments)}") || cco_die 70 "CLAUDE_LAUNCH_ASSIGNMENT_STATE_AMBIGUOUS"
+  busy_count=0
+  resume_assignment_found=0
+  for assignment_record in "${assignment_records[@]}"; do
+    [[ -n "$assignment_record" ]] || continue
+    assignment_state=$("$CCO_JQ" -r '.state' "$assignment_record")
+    assignment_root=$("$CCO_JQ" -r '.root' "$assignment_record")
+    assignment_uuid=$("$CCO_JQ" -r '.session_uuid' "$assignment_record")
+    assignment_task=$("$CCO_JQ" -r '.task_id // empty' "$assignment_record")
+    assignment_live_status=0
+    cco_assignment_worker_live "$assignment_record" || assignment_live_status=$?
+
+    if [[ "$assignment_state" == "reserved" && $assignment_live_status -eq 1 ]]; then
+      cco_reconcile_dead_reservation "$assignment_record" || \
+        cco_die 70 "CLAUDE_LAUNCH_RESERVATION_RECONCILE_FAILED: uuid=$assignment_uuid root=$assignment_root"
+      if [[ "$mode" == "resume" && "$assignment_uuid" == "$session_uuid" ]]; then
+        cco_die 77 "CLAUDE_RESUME_UNASSIGNED_RETIRED: uuid=$session_uuid root=$root"
+      fi
+      continue
+    elif (( assignment_live_status != 0 && assignment_live_status != 1 )); then
+      cco_die 70 "CLAUDE_LAUNCH_LIVENESS_UNPROVEN: uuid=$assignment_uuid root=$assignment_root"
+    fi
+
+    if [[ "$assignment_root" == "$root" ]]; then
+      if [[ "$mode" == "resume" && "$assignment_uuid" == "$session_uuid" && "$assignment_state" == "active" ]]; then
+        (( assignment_live_status == 1 )) || cco_die 75 "CLAUDE_RESUME_ASSIGNMENT_STILL_LIVE: uuid=$session_uuid root=$root"
+        resume_assignment_found=1
+        continue
+      fi
+      if [[ "$assignment_state" == "reserved" ]]; then
+        cco_die 77 "CLAUDE_LAUNCH_ROOT_RESERVED: root=$root uuid=$assignment_uuid"
+      elif (( assignment_live_status == 0 )); then
+        cco_die 77 "CLAUDE_LAUNCH_ROOT_BUSY: root=$root uuid=$assignment_uuid task_id=$assignment_task"
+      else
+        cco_die 77 "CLAUDE_LAUNCH_ROOT_ORPHANED: root=$root uuid=$assignment_uuid task_id=$assignment_task"
+      fi
+    fi
+
+    (( assignment_live_status == 0 )) && (( busy_count += 1 ))
+  done
+  (( busy_count < max_busy )) || cco_die 77 "CLAUDE_LAUNCH_CAPACITY_BUSY: busy=$busy_count max=$max_busy"
+  reservation_needed=1
+  (( resume_assignment_found == 0 )) || reservation_needed=0
+fi
+
+# Only this session's own lease can now block acquisition. Other admitted
+# workers are already represented by active or reserved records above.
 if existing_lease=$(cco_session_lease "$session_uuid" "$path_hash"); then
   if cco_lease_is_live "$existing_lease"; then
     cco_die 75 "LEASE_CONFLICT: uuid=$session_uuid root=$root lease=$existing_lease"
@@ -316,7 +375,7 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$worker_group" > "$registration/process_group"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$registration/created_at"
   print -r -- "5" > "$registration/runtime_schema_version"
-  print -r -- "0.3.1" > "$registration/runtime_version"
+  print -r -- "0.4.0" > "$registration/runtime_version"
   print -r -- "$lineage_kind" > "$registration/lineage_kind"
   print -r -- "$parent_route_class" > "$registration/parent_route_class"
   print -r -- "$parent_route_reason" > "$registration/parent_route_reason"
@@ -676,7 +735,7 @@ deny_rules=(
   'Bash(sudo *)' 'Bash(open *)' 'Bash(osascript *)' 'Bash(crontab *)'
   'Bash(defaults write *)'
   'Bash(*assign-worker.zsh*)' 'Bash(*rotate-worker.zsh*)'
-  'Bash(*retire-native-fallback.zsh*)'
+  'Bash(*retire-native-fallback.zsh*)' 'Bash(*reconcile-orphan.zsh*)'
   'Bash(kill *)' 'Bash(pkill *)' 'Bash(shutdown *)' 'Bash(reboot *)'
   'Bash(rm -rf *)'
 )
@@ -722,6 +781,15 @@ if [[ "$runtime_schema" == "4" || "$runtime_schema" == "5" ]]; then
   stage_policy=$(<"$registration/health/policy.json")
 fi
 
+admission_state="idle_unreserved"
+if (( reservation_needed == 1 )); then
+  cco_create_reservation "$session_uuid" "$root" "$thread_hash" || \
+    cco_die 75 "CLAUDE_LAUNCH_RESERVATION_FAILED: uuid=$session_uuid root=$root"
+  admission_state="reserved"
+elif [[ "$mode" == "resume" ]]; then
+  admission_state="active_recovery"
+fi
+
 ready_json=$("$CCO_JQ" -cn \
   --arg uuid "$session_uuid" \
   --arg name "$worker_name" \
@@ -735,6 +803,7 @@ ready_json=$("$CCO_JQ" -cn \
   --arg runtime_schema "$runtime_schema" \
   --arg context_state "$context_state" \
   --arg stage_health_state "$stage_health_state" \
+  --arg admission_state "$admission_state" \
   --arg lineage_kind "$lineage_kind" \
   --arg predecessor_uuid "$predecessor_uuid" \
   --arg lineage_id "$lineage_id" \
@@ -747,6 +816,7 @@ ready_json=$("$CCO_JQ" -cn \
     context_state:$context_state,context_compactions:$context_compactions,
     context_acknowledged:$context_acknowledged,
     stage_health_state:$stage_health_state,stage_health_policy:$stage_policy,
+    admission_state:$admission_state,
     lineage_kind:(if $lineage_kind == "" then null else $lineage_kind end),
     predecessor_session_uuid:(if $predecessor_uuid == "" then null else $predecessor_uuid end),
     lineage_id:(if $lineage_id == "" then null else $lineage_id end),

@@ -78,7 +78,7 @@ runtime_lib="$script_dir/runtime-lib.zsh"
 [[ -r "$runtime_lib" ]] || fail "NATIVE_RUNTIME_LIB_MISSING" 66
 source "$runtime_lib"
 cco_init
-codeindexer_json=$(cco_codeindexer_mcp_json "$CCO_HOME/.claude.json" 0) || {
+codeindexer_json=$(cco_codeindexer_mcp_json "$CCO_CLAUDE_STATE_FILE" 0) || {
   fail "NATIVE_CODEINDEXER_CONFIG_INVALID: expected credential-free loopback CodeIndexer" 65
 }
 codeindexer_url=$(print -rn -- "$codeindexer_json" | "$CCO_JQ" -er '.mcpServers.codeindexer.url') || {

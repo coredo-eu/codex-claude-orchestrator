@@ -181,8 +181,9 @@ write_scalar "$health/agent_calls" "$agent_calls" || emit_deny
 
 transcript_state="unavailable"
 transcript_path=$(print -rn -- "$event" | "$jq_bin" -r '.transcript_path')
-projects_root="${HOME:-}/.claude/projects"
-if [[ -n "${HOME:-}" && "$HOME" == /* && -d "$projects_root" && ! -L "$projects_root" && \
+claude_config_dir=${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}
+projects_root="$claude_config_dir/projects"
+if [[ "$claude_config_dir" == /* && -d "$projects_root" && ! -L "$projects_root" && \
       "$transcript_path" == /* && -f "$transcript_path" && ! -L "$transcript_path" ]]; then
   projects_root=$(cd -P -- "$projects_root" 2>/dev/null && pwd -P) || projects_root=""
   transcript_dir=$(cd -P -- "${transcript_path:h}" 2>/dev/null && pwd -P) || transcript_dir=""

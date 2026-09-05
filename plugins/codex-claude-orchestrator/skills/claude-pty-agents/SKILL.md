@@ -1,6 +1,6 @@
 ---
 name: claude-pty-agents
-description: Launch and safely retire one bounded Claude Code stage per owned session, with a Sonnet 5 parent by default, role-routed Haiku 4.5/Sonnet 5/Opus 5/Fable 5 subagents, read-only loopback CodeIndexer discovery, and GPT-5.6 native Codex fallback. Use when Claude is requested or a bounded repository stage benefits from context isolation. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
+description: Launch and safely retire one bounded Claude Code stage per owned session, with a Sonnet 5 parent by default, role-routed Haiku 4.5/Sonnet 5/Opus 5/Fable 5 subagents, read-only loopback CodeIndexer discovery, and GPT-5.6 native Codex fallback. Use when Claude is requested, or when net end-to-end delegation value — transfer, verification, and recovery overhead included — favors a bounded Claude worker over direct action; do not exclude a stage merely because it touches already-known files. Do not use for user-launched standalone Claude or environments without an interactive PTY.
 ---
 
 # Claude PTY agents
@@ -9,6 +9,15 @@ Use persistent Claude Code processes owned by this Codex thread. Keep Codex as t
 architecture or product tradeoffs, authority, conflicts, independent
 verification, and the final verdict. Treat this skill as transport and custody
 policy, never as additional authority.
+
+Advisory goal and continuation context — the guidance Codex uses to judge what
+it is trying to achieve and what to do next — is distinct from this skill's
+admission, custody, and stage guards. Those guards can stop a worker (reject a
+launch, refuse an assignment, deny a parent tool) and request a handoff, but
+none of them can complete or redefine Codex's outer goal. Codex can continue
+authorized diagnosis, verification, recovery, or independent work while honoring
+the kill switch and existing custody. Direct implementation or rerouting of the
+same outcome requires custody return and the applicable retirement/fallback checks.
 
 ## Contract and boundaries
 
@@ -33,7 +42,7 @@ for a material scope expansion or when the target or intended end state cannot
 be determined safely.
 
 The launcher never adopts a foreign or standalone Claude session. A normal
-launch reserves one canonical root and one of at most two live HOME-wide slots
+launch reserves one canonical root and one configured live HOME-wide slot
 before `READY`; assignment upgrades that exact record to write access. A dead
 unassigned reservation can be tombstoned safely, while an active orphan blocks
 its root until explicit operator reconciliation. Never resume, assign, rotate, retire, or
@@ -54,7 +63,7 @@ Resolve this skill's directory, then check prerequisites and status:
 command -v claude jq zsh git
 ```
 
-`status` is observational: it reports the shared `busy/2` assignment count, all
+`status` is observational: it reports the shared `busy/<configured-limit>` assignment count, all
 active and reserved records, orphaned assignments, blocked roots, and verified live workers
 without reading prompt or transcript content. It creates nothing on an untouched
 HOME. Where runtime state already exists it may take/create the coordination lock,
@@ -85,7 +94,7 @@ const worker = await tools.exec_command({
 A normal launch atomically reserves the canonical root and one shared busy slot
 before it emits `CODEX_PTY_WORKER_READY`; assignment upgrades that durable
 record from `access:none` to `access:write`. A root conflict, active orphan, or
-full two-worker capacity is therefore rejected before Claude is started. Never
+full configured capacity is therefore rejected before Claude is started. Never
 use `--idle` to bypass this admission path. That explicit flag exists only for
 operator diagnostics, compatibility testing, or deliberate prewarming; it
 creates an unreserved process and is not part of this skill's routine workflow.
@@ -130,11 +139,17 @@ OS-enforced Bash sandbox. The launcher explicitly removes inherited
 collapse role-specific routing.
 
 The launcher loads no user/project/local settings sources and does not edit
-standalone Claude configuration. A new schema-6 worker extracts only the exact
-credential-free loopback CodeIndexer entry from `$HOME/.claude.json`, snapshots
-it privately, and guards its MCP tools with a read-only allowlist. Resume uses
-that snapshot without rereading the global file. It remains optional; direct
-source inspection is equally valid. Claude Code may show a
+standalone Claude configuration. It clears an ambient `CLAUDE_CONFIG_DIR` so a
+shell profile cannot silently change worker identity. To bind the transport to
+one explicit Claude profile, set `CODEX_CLAUDE_CONFIG_DIR` to an existing,
+absolute, non-symlink Claude configuration directory. The launcher passes that
+directory to Claude only for the owned worker, pins it in the registration, and
+refuses assignment, resume, or successor lineage through a different profile.
+A new schema-6 worker extracts only the exact credential-free loopback
+CodeIndexer entry from that profile's `.claude.json` (or `$HOME/.claude.json`
+without an explicit route), snapshots it privately, and guards its MCP tools
+with a read-only allowlist. Resume uses that snapshot without rereading the
+profile file. It remains optional; direct source inspection is equally valid. Claude Code may show a
 repository trust dialog on the first launch. Codex owns the repository trust
 decision and does not ask the user. This does not expand any other authority.
 
@@ -145,8 +160,9 @@ Never use bare `claude -c`, an unqualified `--resume`, or another session.
 
 ## Ownership and admission boundaries
 
-The launcher permits at most two live admitted workers per HOME by default
-(`CODEX_CLAUDE_MAX_BUSY_WORKERS` may be only `1` or `2`) and one normal
+The launcher permits a configurable number of live admitted workers per HOME
+(`CODEX_CLAUDE_MAX_BUSY_WORKERS` defaults to `2` and accepts integers from `1`
+through `7`) and one normal
 reservation or active write assignment per canonical root. A live reservation
 counts against capacity before a task receives write access. If its exact
 registered process dies first, the runtime may preserve a

@@ -20,8 +20,9 @@ source "$script_dir/runtime-lib.zsh"
 cco_init
 
 if [[ "$action" == "status" ]]; then
+  max_busy=$(cco_max_busy_workers) || cco_die 64 "INVALID_MAX_BUSY_WORKERS"
   if [[ ! -e "$CCO_STATE_DIR" && ! -L "$CCO_STATE_DIR" ]]; then
-    print -- "Claude PTY agents: ON — busy=0/2 active=0 reserved=0 orphaned=0 stale_reserved=0 blocked_roots=0 live_workers=0 legacy_stale_leases=0"
+    print -- "Claude PTY agents: ON — busy=0/$max_busy active=0 reserved=0 orphaned=0 stale_reserved=0 blocked_roots=0 live_workers=0 legacy_stale_leases=0"
     exit 0
   fi
   [[ -d "$CCO_STATE_DIR" && ! -L "$CCO_STATE_DIR" ]] || \
@@ -113,7 +114,7 @@ if [[ "$action" == "status" ]]; then
   fi
   state="ON"
   [[ ! -e "$CCO_DISABLED_MARKER" ]] || state="OFF"
-  print -- "Claude PTY agents: $state — busy=$busy_count/2 active=$active_count reserved=$reserved_count orphaned=$orphaned_count stale_reserved=$stale_reserved_count blocked_roots=${#active_roots} live_workers=$live_count legacy_stale_leases=$legacy_stale_count"
+  print -- "Claude PTY agents: $state — busy=$busy_count/$max_busy active=$active_count reserved=$reserved_count orphaned=$orphaned_count stale_reserved=$stale_reserved_count blocked_roots=${#active_roots} live_workers=$live_count legacy_stale_leases=$legacy_stale_count"
   exit 0
 fi
 

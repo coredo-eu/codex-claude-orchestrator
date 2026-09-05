@@ -26,6 +26,11 @@ mutations direct and sequential.
 A successful batch is not goal completion. Continue until the goal's actual
 verification criteria are satisfied.
 
+Goal/continuation records are advisory context for Codex's own reasoning,
+not runtime-enforced controls. They are distinct from the admission, custody, and
+stage guards described below: those guards can stop a worker and request a
+handoff, but none of them can complete or freeze this outer goal.
+
 For Claude PTY observation, keep the kill-switch and retirement preflight plus
 the dependent poll sequential inside one `functions.exec` program. While a
 worker holds edit custody, do not duplicate that outcome in Codex; observation,
@@ -45,10 +50,13 @@ Codex-owned Claude worker provided by
 when orchestrator judgment is material or delegation overhead, risk, or
 unavailability removes that value.
 
-The launcher admits at most two busy Claude assignments per HOME by default
-(`CODEX_CLAUDE_MAX_BUSY_WORKERS` may be only `1` or `2`), and an active
-write assignment serializes a canonical root. Admission occurs at assignment:
-idle PTYs consume no busy capacity. A new launch also refuses a second live
+The launcher admits a configurable number of busy Claude assignments per HOME
+(`CODEX_CLAUDE_MAX_BUSY_WORKERS` defaults to `2` and accepts integers from `1`
+through `7`), and a normal reservation or active write assignment serializes
+a canonical root. Admission (reservation) occurs at normal launch, before Claude
+starts; normal assignment upgrades that exact
+reservation from no access to write access. Only an explicitly unreserved
+`--idle` worker consumes no busy capacity. A new launch also refuses a second live
 worker in the same current Codex thread/root. It never adopts a foreign-thread
 or standalone Claude session. A Codex-owned Claude worker
 is permanently local-only and may not commit, push, publish, release, deploy,
@@ -90,7 +98,7 @@ copy whose contract matches the bundled template, never a repository-owned
 profile. Never duplicate the same outcome across both paths.
 
 Give an edit-capable worker a compact contract: Outcome, observable Done when,
-Boundaries, Authoritative context, Non-goals, and Required handoff. Preserve
-unrelated changes and expose no credentials, secret values, private transcripts,
-or unnecessary personal data.
+Boundaries, Authoritative context, Non-goals, Known evidence, and Required
+handoff. Preserve unrelated changes and expose no credentials, secret values,
+private transcripts, or unnecessary personal data.
 ```

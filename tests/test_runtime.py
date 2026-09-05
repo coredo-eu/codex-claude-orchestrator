@@ -177,6 +177,7 @@ payload = {
     "disable_auto_memory": os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"),
     "disable_explore_plan": os.environ.get("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS"),
     "disable_git_instructions": os.environ.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"),
+    "claude_config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
 }
 tmp = record.with_suffix(".tmp")
 tmp.write_text(json.dumps(payload), encoding="utf-8")
@@ -344,6 +345,7 @@ def main() -> int:
                 "FAKE_CLAUDE_CHILD_PID": str(child_record),
             }
         )
+        env["CLAUDE_CONFIG_DIR"] = str(base / "ambient config must not leak")
 
         # These assertions measure what the launcher sets, so Claude Code
         # control variables from the surrounding session must not leak in.
@@ -351,6 +353,7 @@ def main() -> int:
             "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
             "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS",
+            "CODEX_CLAUDE_MAX_BUSY_WORKERS",
         ):
             env.pop(ambient, None)
 
@@ -362,6 +365,21 @@ def main() -> int:
             and "busy=0/2" in clean_status.stdout
             and not (home / ".codex").exists(),
             f"status mutated a clean HOME: {clean_status}",
+        )
+        configured_max_env = env.copy()
+        configured_max_env["CODEX_CLAUDE_MAX_BUSY_WORKERS"] = "7"
+        configured_max_status = subprocess.run(
+            [zsh, str(TOGGLE), "status"],
+            env=configured_max_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            configured_max_status.returncode == 0
+            and "busy=0/7" in configured_max_status.stdout
+            and not (home / ".codex").exists(),
+            f"configured maximum status drift: {configured_max_status}",
         )
 
         legacy_status_root = base / "legacy status root"
@@ -414,6 +432,84 @@ def main() -> int:
                 }
             ),
             encoding="utf-8",
+        )
+
+        custom_repo = base / "custom profile repo"
+        custom_repo.mkdir()
+        subprocess.run([git, "init", "-q", "-b", "main", str(custom_repo)], check=True)
+        custom_claude_config = base / "shared claude profile"
+        custom_claude_config.mkdir()
+        (custom_claude_config / ".claude.json").write_text(
+            json.dumps(
+                {"mcpServers": {"codeindexer": {"type": "http", "url": "http://127.0.0.1:8999/mcp"}}}
+            ),
+            encoding="utf-8",
+        )
+        custom_record = base / "custom profile record.json"
+        custom_env = env.copy()
+        custom_env.update(
+            {
+                "CODEX_CLAUDE_CONFIG_DIR": str(custom_claude_config),
+                "CLAUDE_CONFIG_DIR": str(base / "wrong ambient claude profile"),
+                "FAKE_CLAUDE_RECORD": str(custom_record),
+            }
+        )
+        custom_env.pop("FAKE_CLAUDE_CHILD_PID", None)
+        custom_worker, custom_master = start_pty(
+            [zsh, str(LAUNCHER), str(custom_repo), "--idle"], cwd=custom_repo, env=custom_env
+        )
+        custom_output = read_pty(custom_worker, custom_master, needle="CODEX_PTY_WORKER_READY")
+        require("CODEX_PTY_WORKER_READY" in custom_output, f"custom-profile worker failed: {custom_output}")
+        custom_ready_line = next(
+            (line for line in custom_output.splitlines() if "CODEX_PTY_WORKER_READY " in line), ""
+        )
+        custom_ready = json.loads(custom_ready_line.split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
+        custom_uuid = custom_ready["uuid"]
+        wait_for(custom_record)
+        custom_observed = json.loads(custom_record.read_text(encoding="utf-8"))
+        require(
+            custom_observed["claude_config_dir"] == str(custom_claude_config)
+            and custom_ready["claude_config_dir"] == str(custom_claude_config),
+            "dedicated Claude profile was not passed to the worker",
+        )
+        custom_registration = home / ".codex/claude-pty-sessions" / custom_uuid
+        require(
+            (custom_registration / "claude_config_dir").read_text(encoding="utf-8").strip()
+            == str(custom_claude_config),
+            "Claude profile route was not pinned in the registration",
+        )
+        custom_mcp = json.loads(
+            (custom_registration / "runtime/codeindexer-mcp.json").read_text(encoding="utf-8")
+        )
+        require(
+            custom_mcp["mcpServers"]["codeindexer"]["url"] == "http://127.0.0.1:8999/mcp",
+            "CodeIndexer snapshot did not come from the dedicated Claude profile",
+        )
+        custom_settings = json.loads(
+            (custom_registration / "runtime/worker-settings.json").read_text(encoding="utf-8")
+        )
+        require(
+            f"Edit(/{custom_claude_config}/**)" in custom_settings["permissions"]["deny"],
+            "dedicated Claude profile is absent from worker deny rules",
+        )
+        os.killpg(custom_worker.pid, signal.SIGTERM)
+        custom_worker.wait(timeout=5)
+        os.close(custom_master)
+
+        mismatched_env = env.copy()
+        mismatched_env["FAKE_CLAUDE_RECORD"] = str(base / "mismatched profile record.json")
+        mismatched_env.pop("FAKE_CLAUDE_CHILD_PID", None)
+        mismatched_worker, mismatched_master = start_pty(
+            [zsh, str(LAUNCHER), str(custom_repo), "--resume", custom_uuid],
+            cwd=custom_repo,
+            env=mismatched_env,
+        )
+        mismatched_output = read_pty(mismatched_worker, mismatched_master, timeout=10)
+        mismatched_worker.wait(timeout=5)
+        os.close(mismatched_master)
+        require(
+            mismatched_worker.returncode == 77 and "CLAUDE_RESUME_CONFIG_DIR_MISMATCH" in mismatched_output,
+            "a worker resumed through a different Claude profile",
         )
 
         # Keep this long-lived fixture explicitly unreserved so the test can
@@ -481,6 +577,7 @@ def main() -> int:
         require(observed["disable_auto_memory"] == "1", "auto-memory was not disabled")
         require(observed["disable_explore_plan"] == "1", "built-in Explore/Plan agents were not disabled")
         require(observed["disable_git_instructions"] == "1", "automatic Git instructions were not disabled")
+        require(observed["claude_config_dir"] is None, "ambient Claude profile leaked into the worker")
         require(option_value(argv, "--model") == "claude-sonnet-5", "parent model is not Claude Sonnet 5")
         require(option_value(argv, "--effort") == "high", "parent effort is not high")
         agents = json.loads(option_value(argv, "--agents"))
@@ -781,7 +878,7 @@ def main() -> int:
         )
 
         invalid_max_env = admission_workers[2][3].copy()
-        invalid_max_env["CODEX_CLAUDE_MAX_BUSY_WORKERS"] = "3"
+        invalid_max_env["CODEX_CLAUDE_MAX_BUSY_WORKERS"] = "8"
         invalid_max = run_assign(
             zsh,
             admission_roots[2],
@@ -791,7 +888,7 @@ def main() -> int:
         )
         require(
             invalid_max.returncode == 64 and "INVALID_MAX_BUSY_WORKERS" in invalid_max.stderr,
-            "a process raised the shared busy ceiling above two",
+            "a process raised the shared busy ceiling above seven",
         )
 
         after_orphan = run_assign(
@@ -1844,7 +1941,7 @@ def main() -> int:
             legacy_gate.returncode == 0
             and marker_payload(legacy_gate, "CODEX_PTY_WORKER_ASSIGN")["context_state"]
             == "unobserved_legacy",
-            "legacy session lost productive reuse or was claimed fresh",
+            f"legacy session lost productive reuse or was claimed fresh: {legacy_gate}",
         )
         wait_for(legacy_record)
         legacy_observed = json.loads(legacy_record.read_text(encoding="utf-8"))

@@ -64,7 +64,7 @@ stage_guard="$script_dir/worker-stage-guard.zsh"
 
 worker_mcp_json=""
 if [[ "$mode" == "new" ]]; then
-  claude_state_file="$CCO_HOME/.claude.json"
+  claude_state_file="$CCO_CLAUDE_STATE_FILE"
   worker_mcp_json=$(cco_codeindexer_mcp_json "$claude_state_file" 0) || \
     cco_die 65 "WORKER_MCP_CONFIG_INVALID: expected credential-free loopback CodeIndexer at $claude_state_file"
 fi
@@ -88,8 +88,7 @@ stage_warn_cache_read=${CODEX_CLAUDE_STAGE_WARN_CACHE_READ_TOKENS:-131072}
 stage_max_cache_read=${CODEX_CLAUDE_STAGE_MAX_CACHE_READ_TOKENS:-262144}
 stage_warn_elapsed=${CODEX_CLAUDE_STAGE_WARN_SECONDS:-600}
 stage_max_elapsed=${CODEX_CLAUDE_STAGE_MAX_SECONDS:-1200}
-max_busy=${CODEX_CLAUDE_MAX_BUSY_WORKERS:-2}
-[[ "$max_busy" == <-> && "$max_busy" -ge 1 && "$max_busy" -le 2 ]] || cco_die 64 "INVALID_MAX_BUSY_WORKERS"
+max_busy=$(cco_max_busy_workers) || cco_die 64 "INVALID_MAX_BUSY_WORKERS"
 if [[ "$mode" == "new" ]]; then
   for stage_value in "$stage_warn_requests" "$stage_max_requests" "$stage_warn_cache_read" "$stage_max_cache_read" "$stage_warn_elapsed" "$stage_max_elapsed" "$stage_warn_parent_calls" "$stage_max_parent_calls"; do
     [[ "$stage_value" == <-> ]] || cco_die 64 "INVALID_STAGE_HEALTH_POLICY"
@@ -213,6 +212,10 @@ if [[ "$mode" == "resume" ]]; then
       ;;
     *) cco_die 77 "CLAUDE_RESUME_SCHEMA_UNSUPPORTED: uuid=$session_uuid schema=$runtime_schema" ;;
   esac
+  registered_claude_config_dir=$(cco_registration_claude_config_dir "$registration") || \
+    cco_die 77 "CLAUDE_RESUME_CONFIG_DIR_INVALID: uuid=$session_uuid"
+  [[ "$registered_claude_config_dir" == "$CCO_CLAUDE_CONFIG_DIR" ]] || \
+    cco_die 77 "CLAUDE_RESUME_CONFIG_DIR_MISMATCH: uuid=$session_uuid"
   for snapshot in "${required_snapshots[@]}"; do
     [[ -r "$registration/$snapshot" ]] || cco_die 77 "CLAUDE_RESUME_SNAPSHOT_INCOMPLETE: uuid=$session_uuid missing=$snapshot"
   done
@@ -259,6 +262,10 @@ if [[ -n "$predecessor_uuid" ]]; then
   cco_is_short_text "$lineage_id" 128 || cco_die 75 "CLAUDE_LINEAGE_ID_MISSING: predecessor=$predecessor_uuid"
   [[ -z "$registered_lineage_id" || "$registered_lineage_id" == "$lineage_id" ]] || \
     cco_die 77 "CLAUDE_RESUME_LINEAGE_INVALID: uuid=$session_uuid predecessor=$predecessor_uuid"
+  predecessor_claude_config_dir=$(cco_registration_claude_config_dir "$predecessor_registration") || \
+    cco_die 77 "CLAUDE_LINEAGE_CONFIG_DIR_INVALID: predecessor=$predecessor_uuid"
+  [[ "$predecessor_claude_config_dir" == "$CCO_CLAUDE_CONFIG_DIR" ]] || \
+    cco_die 77 "CLAUDE_LINEAGE_CONFIG_DIR_MISMATCH: predecessor=$predecessor_uuid"
 fi
 
 cco_validate_model "$parent_model" || cco_die 64 "INVALID_PARENT_MODEL"
@@ -381,6 +388,9 @@ if [[ "$mode" == "new" ]]; then
   print -r -- "$lineage_kind" > "$registration/lineage_kind"
   print -r -- "$parent_route_class" > "$registration/parent_route_class"
   print -r -- "$parent_route_reason" > "$registration/parent_route_reason"
+  if (( CCO_CLAUDE_CONFIG_EXPLICIT == 1 )); then
+    print -r -- "$CCO_CLAUDE_CONFIG_DIR" > "$registration/claude_config_dir"
+  fi
   if [[ -n "$predecessor_uuid" ]]; then
     print -r -- "$predecessor_uuid" > "$registration/predecessor_session_uuid"
     print -r -- "$lineage_id" > "$registration/lineage_id"
@@ -464,6 +474,7 @@ if [[ "$mode" == "new" ]]; then
     --arg stage "$stage_command" \
     --arg compaction "$compaction_command" \
     --arg home "$CCO_HOME" \
+    --arg claude_config_dir "$CCO_CLAUDE_CONFIG_DIR" \
     --arg root "$root" '
   {
     disableAllHooks: false,
@@ -475,6 +486,7 @@ if [[ "$mode" == "new" ]]; then
       disableBypassPermissionsMode: "disable",
       deny: [
         "Edit(/" + $home + "/.claude/**)",
+        "Edit(/" + $claude_config_dir + "/**)",
         "Edit(/" + $home + "/.codex/**)",
         "Edit(/" + $home + "/.agents/**)",
         "Read(/" + $home + "/**/.claude/settings.local.json)",
@@ -783,6 +795,7 @@ ready_json=$("$CCO_JQ" -cn \
   --arg parent_route_class "$parent_route_class" \
   --arg parent_route_reason "$parent_route_reason" \
   --arg runtime_schema "$runtime_schema" \
+  --arg claude_config_dir "$CCO_CLAUDE_CONFIG_DIR" \
   --arg context_state "$context_state" \
   --arg stage_health_state "$stage_health_state" \
   --arg admission_state "$admission_state" \
@@ -794,7 +807,8 @@ ready_json=$("$CCO_JQ" -cn \
   --argjson stage_policy "$stage_policy" \
   --argjson agent_models "$agent_models" \
   '{uuid:$uuid,name:$name,root:$root,lease:$lease,mode:$mode,
-    runtime_schema:$runtime_schema,parent_model:$parent_model,agent_models:$agent_models,
+    runtime_schema:$runtime_schema,claude_config_dir:$claude_config_dir,
+    parent_model:$parent_model,agent_models:$agent_models,
     context_state:$context_state,context_compactions:$context_compactions,
     context_acknowledged:$context_acknowledged,
     stage_health_state:$stage_health_state,stage_health_policy:$stage_policy,
@@ -809,7 +823,12 @@ cco_release_gate
 gate_held=0
 trap - EXIT HUP INT TERM
 
-typeset -a model_env agent_args builtin_agent_env mcp_args effort_env effort_args
+typeset -a model_env agent_args builtin_agent_env mcp_args effort_env effort_args claude_config_env claude_config_assignment
+claude_config_env=(-u CLAUDE_CONFIG_DIR)
+claude_config_assignment=()
+if (( CCO_CLAUDE_CONFIG_EXPLICIT == 1 )); then
+  claude_config_assignment=("CLAUDE_CONFIG_DIR=$CCO_CLAUDE_CONFIG_DIR")
+fi
 if [[ "$runtime_schema" == "1" ]]; then
   model_env=("CLAUDE_CODE_SUBAGENT_MODEL=$legacy_subagent_model")
   agent_args=()
@@ -828,8 +847,10 @@ mcp_args=()
 [[ "$runtime_schema" != "4" && "$runtime_schema" != "5" && "$runtime_schema" != "6" ]] || mcp_args=(--mcp-config "$runtime_mcp")
 
 exec /usr/bin/env \
+  "${claude_config_env[@]}" \
   "${effort_env[@]}" \
   "${model_env[@]}" \
+  "${claude_config_assignment[@]}" \
   CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 \
   "${builtin_agent_env[@]}" \
   CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1 \

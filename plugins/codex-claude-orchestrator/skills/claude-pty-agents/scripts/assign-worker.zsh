@@ -29,9 +29,7 @@ path_hash=$(cco_hash "$root")
 thread_hash=$(cco_hash "$codex_thread_id")
 registration="$CCO_SESSION_ROOT/$session_uuid"
 threshold="$CCO_CONTEXT_COMPACTION_THRESHOLD"
-max_busy=${CODEX_CLAUDE_MAX_BUSY_WORKERS:-2}
-[[ "$max_busy" == <-> && "$max_busy" -ge 1 && "$max_busy" -le 2 ]] || \
-  cco_die 64 "INVALID_MAX_BUSY_WORKERS"
+max_busy=$(cco_max_busy_workers) || cco_die 64 "INVALID_MAX_BUSY_WORKERS"
 
 [[ ! -e "$CCO_DISABLED_MARKER" ]] || cco_die 78 "CLAUDE_AGENTS_DISABLED: $CCO_DISABLED_MARKER"
 cco_acquire_gate || cco_die $? "CLAUDE_GATE_BUSY: $CCO_GATE_LOCK"
@@ -63,6 +61,10 @@ cco_registration_matches "$registration" "$root" "$path_hash" "$thread_hash" "$s
 [[ -r "$registration/runtime_schema_version" ]] || \
   cco_die 77 "CLAUDE_ASSIGN_SCHEMA_UNSUPPORTED: uuid=$session_uuid"
 runtime_schema=$(<"$registration/runtime_schema_version")
+registered_claude_config_dir=$(cco_registration_claude_config_dir "$registration") || \
+  cco_die 77 "CLAUDE_ASSIGN_CONFIG_DIR_INVALID: uuid=$session_uuid"
+[[ "$registered_claude_config_dir" == "$CCO_CLAUDE_CONFIG_DIR" ]] || \
+  cco_die 77 "CLAUDE_ASSIGN_CONFIG_DIR_MISMATCH: uuid=$session_uuid"
 
 # Only the lease this exact session owns proves it is still assignable.
 lease=$(cco_worker_lease "$session_uuid") || \
@@ -207,7 +209,7 @@ if [[ "$runtime_schema" == "5" || "$runtime_schema" == "6" ]]; then
     [[ -f "$health_dir/agent_calls_by_role.json" && ! -L "$health_dir/agent_calls_by_role.json" ]] || cco_die 70 "CLAUDE_ASSIGN_STAGE_HEALTH_CORRUPT: uuid=$session_uuid"
   fi
   transcript_baseline=0
-  transcript_candidates=("$CCO_HOME/.claude/projects"/**/"$session_uuid.jsonl"(N))
+  transcript_candidates=("$registered_claude_config_dir/projects"/**/"$session_uuid.jsonl"(N))
   if (( ${#transcript_candidates[@]} == 1 )) && [[ -f "$transcript_candidates[1]" && ! -L "$transcript_candidates[1]" ]]; then
     transcript_baseline=$(/usr/bin/stat -f '%z' "$transcript_candidates[1]" 2>/dev/null || /usr/bin/stat -c '%s' "$transcript_candidates[1]" 2>/dev/null || print -r -- "0")
     [[ "$transcript_baseline" == <-> ]] || transcript_baseline=0

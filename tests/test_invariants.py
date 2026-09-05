@@ -79,6 +79,7 @@ def main() -> int:
         require(marker in skill_text, f"Codex-owned repository trust policy missing: {marker}")
 
     launcher = read(SKILL / "scripts/launch-worker.zsh")
+    assign = read(SKILL / "scripts/assign-worker.zsh")
     stage_guard_text = read(SKILL / "scripts/worker-stage-guard.zsh")
     runtime = read(SKILL / "scripts/runtime-lib.zsh")
     rotate = read(SKILL / "scripts/rotate-worker.zsh")
@@ -228,6 +229,21 @@ def main() -> int:
     require("CODEX_CLAUDE_SUBAGENT_MODEL:-" not in launcher, "legacy global Claude model configuration remains")
     require("-u CLAUDE_CODE_SUBAGENT_MODEL" in launcher, "inherited global Claude model override is not cleared")
     require("-u CLAUDE_CODE_EFFORT_LEVEL" in launcher, "inherited global Claude effort override is not cleared")
+    require(
+        "CODEX_CLAUDE_CONFIG_DIR" in runtime
+        and "CCO_CLAUDE_STATE_FILE" in launcher
+        and "CCO_CLAUDE_STATE_FILE" in native_runner
+        and "-u CLAUDE_CONFIG_DIR" in launcher
+        and "CLAUDE_CONFIG_DIR=$CCO_CLAUDE_CONFIG_DIR" in launcher,
+        "dedicated Claude profile route is incomplete",
+    )
+    require(
+        "cco_registration_claude_config_dir" in launcher
+        and "cco_registration_claude_config_dir" in assign
+        and "CLAUDE_RESUME_CONFIG_DIR_MISMATCH" in launcher
+        and "CLAUDE_ASSIGN_CONFIG_DIR_MISMATCH" in assign,
+        "Claude profile route is not pinned across lifecycle operations",
+    )
     require('--agents "$agents_json"' in launcher, "session-scoped Claude roster missing")
     require("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1" in launcher, "built-in Explore/Plan disable missing")
     for agent in ("Explore", "Plan", "general-purpose", "statusline-setup", "claude-code-guide"):
@@ -279,13 +295,15 @@ def main() -> int:
     require("PTY_PROCESS_GROUP_ISOLATION_REQUIRED" in launcher, "worker process-group isolation missing")
     require("cco_thread_root_has_live_worker" in launcher, "same-thread/root live-worker launch gate missing")
     require("CCO_ASSIGNMENT_ROOT" in runtime and "cco_terminalize_assignment" in runtime, "durable assignment state missing")
-    assign = read(SKILL / "scripts/assign-worker.zsh")
     require(
-        "CODEX_CLAUDE_MAX_BUSY_WORKERS:-2" in launcher
-        and "CODEX_CLAUDE_MAX_BUSY_WORKERS:-2" in assign
+        "max_busy=$(cco_max_busy_workers)" in launcher
+        and "max_busy=$(cco_max_busy_workers)" in assign
+        and "max_busy=$(cco_max_busy_workers)" in toggle
+        and "CCO_DEFAULT_MAX_BUSY_WORKERS=2" in runtime
+        and "CCO_MAX_BUSY_WORKERS_LIMIT=7" in runtime
         and "CLAUDE_LAUNCH_CAPACITY_BUSY" in launcher
         and "CLAUDE_ASSIGN_CAPACITY_BUSY" in assign,
-        "shared launch/assignment admission default missing",
+        "shared launch/assignment admission limit missing",
     )
     require(
         "--idle" in launcher
@@ -353,7 +371,7 @@ def main() -> int:
     )
     require("cco_lease_has_durable_registration" in toggle, "toggle can act outside durable registrations")
     require(
-        "busy=$busy_count/2" in toggle
+        "busy=$busy_count/$max_busy" in toggle
         and "active=$active_count" in toggle
         and "reserved=$reserved_count" in toggle
         and "orphaned=$orphaned_count" in toggle
@@ -477,6 +495,9 @@ def main() -> int:
         require(phrase in skill_text, f"native routing contract missing: {phrase}")
 
     readme = read(ROOT / "README.md")
+    operations_path = ROOT / "docs/operations.md"
+    require("(docs/operations.md)" in readme, "execution documentation is not linked from README")
+    operations = read(operations_path)
     for phrase in (
         "`agent_type` selects the installed custom profile",
         "Missing or mismatched `agent_role` fails closed",
@@ -485,15 +506,16 @@ def main() -> int:
         "pure read/search MCP tools",
         "`Known evidence`",
         "New schema-6 workers",
+        "`CODEX_CLAUDE_CONFIG_DIR`",
         "Assignment atomically upgrades `access:none` to `access:write`",
     ):
-        require(phrase in readme, f"native routing documentation missing: {phrase}")
+        require(phrase in operations, f"native routing documentation missing: {phrase}")
 
     normalized_policy = " ".join(policy.split())
     for phrase in (
         "Codex owns user intent",
         "minimizes end-to-end model cost and elapsed time",
-        "at most two busy Claude assignments",
+        "configurable number of busy Claude assignments",
         "serializes a canonical root",
         "belonging to another Codex thread",
         "permanently local-only",

@@ -10,7 +10,7 @@ def require(value, message):
 def main():
   zsh = subprocess.check_output(["sh", "-c", "command -v zsh"], text=True).strip()
   with tempfile.TemporaryDirectory() as temp:
-    base=Path(temp); home=base/"home"; sid=str(uuid.uuid4()); transcript=home/".claude/projects/x"/(sid+".jsonl"); transcript.parent.mkdir(parents=True); transcript.touch()
+    base=Path(temp); home=base/"home"; claude_config=base/"shared claude profile"; sid=str(uuid.uuid4()); transcript=claude_config/"projects/x"/(sid+".jsonl"); transcript.parent.mkdir(parents=True); transcript.touch()
     registration=home/".codex/claude-pty-sessions"/sid; health=registration/"health"; health.mkdir(parents=True); (registration/"session_uuid").write_text(sid+"\n")
     def write(path, data): path.write_text(json.dumps(data)+"\n")
     (health/"health_schema_version").write_text("1\n")
@@ -25,7 +25,7 @@ def main():
       payload={"hook_event_name":"PreToolUse","session_id":sid,"transcript_path":str(transcript),"tool_name":"Agent","tool_input":{}}
       if agent: payload["agent_id"]=agent
       if role: payload["tool_input"]["subagent_type"]=role
-      env=os.environ.copy(); env["HOME"]=str(home)
+      env=os.environ.copy(); env["HOME"]=str(home); env["CLAUDE_CONFIG_DIR"]=str(claude_config)
       return subprocess.run([zsh,str(GUARD),str(registration)],input=json.dumps(payload),text=True,capture_output=True,env=env)
     with transcript.open("a") as out: out.write(json.dumps(row("one",10))+"\n"+json.dumps(row("one",10))+"\n")
     require(call(role="scout").stdout=="", "duplicate request was not transparent")

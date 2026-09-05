@@ -4,6 +4,9 @@
 
 typeset -g CCO_HOME=""
 typeset -g CCO_STATE_DIR=""
+typeset -g CCO_CLAUDE_CONFIG_DIR=""
+typeset -g CCO_CLAUDE_STATE_FILE=""
+typeset -gi CCO_CLAUDE_CONFIG_EXPLICIT=0
 typeset -g CCO_DISABLED_MARKER=""
 typeset -g CCO_GATE_LOCK=""
 typeset -g CCO_GATE_DIR=""
@@ -14,6 +17,8 @@ typeset -g CCO_JQ=""
 typeset -g CCO_GATE_KIND=""
 typeset -g CCO_GATE_FD=""
 typeset -gr CCO_CONTEXT_COMPACTION_THRESHOLD=2
+typeset -gr CCO_DEFAULT_MAX_BUSY_WORKERS=2
+typeset -gr CCO_MAX_BUSY_WORKERS_LIMIT=7
 
 cco_die() {
   local code="$1"
@@ -22,10 +27,31 @@ cco_die() {
   exit "$code"
 }
 
+cco_max_busy_workers() {
+  local max_busy="${CODEX_CLAUDE_MAX_BUSY_WORKERS:-$CCO_DEFAULT_MAX_BUSY_WORKERS}"
+  [[ "$max_busy" == <-> && "$max_busy" -ge 1 && "$max_busy" -le "$CCO_MAX_BUSY_WORKERS_LIMIT" ]] || return 1
+  print -r -- "$max_busy"
+}
+
 cco_init() {
+  local requested_claude_config_dir=""
   [[ -n "${HOME:-}" && "$HOME" == /* && -d "$HOME" ]] || cco_die 69 "HOME_INVALID"
   CCO_HOME=$(cd -P -- "$HOME" && pwd -P)
   CCO_STATE_DIR="$CCO_HOME/.codex"
+  requested_claude_config_dir=${CODEX_CLAUDE_CONFIG_DIR:-}
+  if [[ -n "$requested_claude_config_dir" ]]; then
+    [[ "$requested_claude_config_dir" == /* && "$requested_claude_config_dir" != *$'\n'* &&
+       -d "$requested_claude_config_dir" && ! -L "$requested_claude_config_dir" ]] || \
+      cco_die 69 "CODEX_CLAUDE_CONFIG_DIR_INVALID"
+    CCO_CLAUDE_CONFIG_DIR=$(cd -P -- "$requested_claude_config_dir" && pwd -P)
+    [[ "$CCO_CLAUDE_CONFIG_DIR" != "/" ]] || cco_die 69 "CODEX_CLAUDE_CONFIG_DIR_INVALID"
+    CCO_CLAUDE_STATE_FILE="$CCO_CLAUDE_CONFIG_DIR/.claude.json"
+    CCO_CLAUDE_CONFIG_EXPLICIT=1
+  else
+    CCO_CLAUDE_CONFIG_DIR="$CCO_HOME/.claude"
+    CCO_CLAUDE_STATE_FILE="$CCO_HOME/.claude.json"
+    CCO_CLAUDE_CONFIG_EXPLICIT=0
+  fi
   CCO_DISABLED_MARKER="$CCO_STATE_DIR/claude-pty-agents.disabled"
   CCO_GATE_LOCK="$CCO_STATE_DIR/claude-pty-agents.gate.lock"
   CCO_GATE_DIR="$CCO_STATE_DIR/claude-pty-agents.gate.d"
@@ -33,6 +59,21 @@ cco_init() {
   CCO_SESSION_ROOT="$CCO_STATE_DIR/claude-pty-sessions"
   CCO_ASSIGNMENT_ROOT="$CCO_STATE_DIR/claude-pty-assignments"
   CCO_JQ=$(command -v jq 2>/dev/null) || cco_die 69 "JQ_NOT_FOUND"
+}
+
+cco_registration_claude_config_dir() {
+  local registration="$1" pinned="$1/claude_config_dir" value
+  if [[ -f "$pinned" && ! -L "$pinned" ]]; then
+    value=$(<"$pinned")
+    [[ "$value" == /* && "$value" != *$'\n'* && -d "$value" && ! -L "$value" ]] || return 1
+    value=$(cd -P -- "$value" 2>/dev/null && pwd -P) || return 1
+    [[ "$value" != "/" ]] || return 1
+    print -r -- "$value"
+  elif [[ -e "$pinned" || -L "$pinned" ]]; then
+    return 1
+  else
+    print -r -- "$CCO_HOME/.claude"
+  fi
 }
 
 cco_hash() {

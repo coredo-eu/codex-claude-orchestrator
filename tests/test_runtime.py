@@ -527,7 +527,7 @@ def main() -> int:
         require(ready["root"] == str(repo), "ready marker did not preserve a root containing spaces")
         expected_agent_models = {
             "explorer": "claude-haiku-4-5-20251001",
-            "codeindexer-explorer": "claude-haiku-4-5-20251001",
+            "codeindexer-explorer": "claude-sonnet-5",
             "scout": "claude-haiku-4-5-20251001",
             "log-analyzer": "claude-haiku-4-5-20251001",
             "test-triager": "claude-haiku-4-5-20251001",
@@ -539,13 +539,13 @@ def main() -> int:
         }
         expected_agent_efforts = {
             "explorer": None,
-            "codeindexer-explorer": None,
+            "codeindexer-explorer": "low",
             "scout": None,
             "log-analyzer": None,
             "test-triager": None,
             "implementer": "high",
             "debugger": "xhigh",
-            "reviewer": "medium",
+            "reviewer": "high",
             "security-reviewer": "xhigh",
             "long-horizon": "xhigh",
         }
@@ -1538,10 +1538,14 @@ def main() -> int:
 
         # A pre-update schema-5 registration has the historical eight-role
         # snapshot and no per-role telemetry file. It must remain resumable.
+        # The schema-2..5 launcher validator is pinned to the historical
+        # reviewer effort, so this fixture restores it explicitly rather than
+        # reusing the current roster's value.
         schema_path = registration_dir / "runtime_schema_version"
         counter_path = registration_dir / "health/agent_calls_by_role.json"
         schema_path.write_text("5\n", encoding="utf-8")
         old_agents = {name: definition for name, definition in agents.items() if name not in {"codeindexer-explorer", "scout"}}
+        old_agents["reviewer"] = {**old_agents["reviewer"], "effort": "medium"}
         agents_path.write_text(json.dumps(old_agents, indent=2) + "\n", encoding="utf-8")
         saved_counter = counter_path.read_bytes()
         counter_path.unlink()

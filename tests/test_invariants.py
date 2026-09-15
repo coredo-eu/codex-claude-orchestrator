@@ -93,7 +93,7 @@ def main() -> int:
 
     expected_agent_models = {
         "explorer": "claude-haiku-4-5-20251001",
-        "codeindexer-explorer": "claude-haiku-4-5-20251001",
+        "codeindexer-explorer": "claude-sonnet-5",
         "scout": "claude-haiku-4-5-20251001",
         "log-analyzer": "claude-haiku-4-5-20251001",
         "test-triager": "claude-haiku-4-5-20251001",
@@ -105,13 +105,13 @@ def main() -> int:
     }
     expected_agent_efforts = {
         "explorer": None,
-        "codeindexer-explorer": None,
+        "codeindexer-explorer": "low",
         "scout": None,
         "log-analyzer": None,
         "test-triager": None,
         "implementer": "high",
         "debugger": "xhigh",
-        "reviewer": "medium",
+        "reviewer": "high",
         "security-reviewer": "xhigh",
         "long-horizon": "xhigh",
     }
@@ -218,7 +218,11 @@ def main() -> int:
         require(role in router_text and model in router_text, f"router mapping missing: {role}")
     require('"permissionDecision":"deny"' in router_text, "router lacks a blocking decision")
     require("subagent_type" in router_text, "router does not inspect the requested role")
-    require("scout|codeindexer-explorer" in router_text, "new Haiku roles are not router-enforced")
+    require("test-triager|scout" in router_text, "new Haiku scout role is not router-enforced")
+    require(
+        'codeindexer-explorer) expected_model="claude-sonnet-5"' in router_text,
+        "codeindexer-explorer Sonnet route is not router-enforced",
+    )
 
     require(
         "CODEX_CLAUDE_PARENT_MODEL:-claude-sonnet-5" in launcher,

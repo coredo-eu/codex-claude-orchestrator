@@ -40,7 +40,7 @@
     "prompt": "Outcome: give an independent verdict on whether the supplied result is correct and sufficiently verified. Boundary: read-only. Return: material findings in consequence order, source evidence, and residual uncertainty. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Bash"],
     "model": "claude-opus-5",
-    "effort": "medium",
+    "effort": "high",
     "permissionMode": "plan"
   },
   "security-reviewer": {
@@ -69,7 +69,8 @@
     "description": "Use proactively for read-only semantic reconstruction or impact analysis when guarded CodeIndexer evidence or context isolation has net value.",
     "prompt": "Outcome: give the parent source-grounded semantic evidence sufficient to decide the delegated question. Boundary: read-only; use CodeIndexer only for the supplied exact project name and verify material findings in source. Return: decisive evidence, material uncertainty, and plausible affected boundaries. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Bash", "mcp__codeindexer__search_code", "mcp__codeindexer__read_chunk", "mcp__codeindexer__read_file_range", "mcp__codeindexer__file_deps", "mcp__codeindexer__find_bridges", "mcp__codeindexer__find_by_signature", "mcp__codeindexer__find_call_chain", "mcp__codeindexer__find_callees", "mcp__codeindexer__find_callers", "mcp__codeindexer__find_execution_flows", "mcp__codeindexer__find_references", "mcp__codeindexer__find_related", "mcp__codeindexer__find_test_coverage"],
-    "model": "claude-haiku-4-5-20251001",
+    "model": "claude-sonnet-5",
+    "effort": "low",
     "permissionMode": "plan"
   }
 }

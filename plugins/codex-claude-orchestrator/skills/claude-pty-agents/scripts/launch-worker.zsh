@@ -585,34 +585,34 @@ elif [[ "$runtime_schema" == "6" ]]; then
     (
       (
         .explorer.model == "claude-haiku-4-5-20251001" and
-        .["codeindexer-explorer"].model == "claude-haiku-4-5-20251001" and
         .scout.model == "claude-haiku-4-5-20251001" and
         .["log-analyzer"].model == "claude-haiku-4-5-20251001" and
         .["test-triager"].model == "claude-haiku-4-5-20251001" and
         .implementer.model == "claude-sonnet-5" and
         .debugger.model == "claude-sonnet-5" and
+        .["codeindexer-explorer"].model == "claude-sonnet-5" and
         .reviewer.model == "claude-opus-5" and
         .["security-reviewer"].model == "claude-opus-5" and
         .["long-horizon"].model == "claude-fable-5" and
         (.explorer | has("effort") | not) and
-        (.["codeindexer-explorer"] | has("effort") | not) and
         (.scout | has("effort") | not) and
         (.["log-analyzer"] | has("effort") | not) and
         (.["test-triager"] | has("effort") | not) and
         .implementer.effort == "high" and
         .debugger.effort == "xhigh" and
-        .reviewer.effort == "medium" and
+        .["codeindexer-explorer"].effort == "low" and
+        .reviewer.effort == "high" and
         .["security-reviewer"].effort == "xhigh" and
         .["long-horizon"].effort == "xhigh"
       ) or
       (
         .explorer.model == "haiku" and
-        .["codeindexer-explorer"].model == "haiku" and
         .scout.model == "haiku" and
         .["log-analyzer"].model == "haiku" and
         .["test-triager"].model == "haiku" and
         .implementer.model == "sonnet" and
         .debugger.model == "sonnet" and
+        .["codeindexer-explorer"].model == "sonnet" and
         .reviewer.model == "opus" and
         .["security-reviewer"].model == "opus" and
         .["long-horizon"].model == "fable" and
@@ -620,12 +620,12 @@ elif [[ "$runtime_schema" == "6" ]]; then
           (all(.[]; has("effort") | not)) or
           (
             (.explorer | has("effort") | not) and
-            (.["codeindexer-explorer"] | has("effort") | not) and
             (.scout | has("effort") | not) and
             (.["log-analyzer"] | has("effort") | not) and
             (.["test-triager"] | has("effort") | not) and
             .implementer.effort == "high" and
             .debugger.effort == "xhigh" and
+            .["codeindexer-explorer"].effort == "low" and
             .reviewer.effort == "high" and
             .["security-reviewer"].effort == "xhigh" and
             .["long-horizon"].effort == "xhigh"

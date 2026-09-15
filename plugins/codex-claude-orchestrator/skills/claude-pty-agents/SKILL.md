@@ -111,13 +111,14 @@ CODEX_CLAUDE_PARENT_ROUTE_REASON=independent_review
 ```
 
 The launcher passes a private session-scoped `--agents` roster. Explorer,
-codeindexer-explorer, scout, log-analyzer, and test-triager use
-`claude-haiku-4-5-20251001`; implementer and debugger use `claude-sonnet-5`;
-reviewer and security-reviewer use `claude-opus-5`. Long-horizon uses
-`claude-fable-5`. The ordinary Sonnet parent starts at `high` effort. Haiku
-roles use the model's fixed behavior because Haiku 4.5 has
-no configurable effort; implementer uses `high`, reviewer uses `medium`, and
-debugger, security-reviewer, and long-horizon use `xhigh`. When Fable is outside
+scout, log-analyzer, and test-triager use
+`claude-haiku-4-5-20251001`; implementer, debugger, and codeindexer-explorer
+use `claude-sonnet-5`; reviewer and security-reviewer use `claude-opus-5`.
+Long-horizon uses `claude-fable-5`. The ordinary Sonnet parent starts at
+`high` effort. Haiku roles use the model's fixed behavior because Haiku 4.5
+has no configurable effort; implementer uses `high`, codeindexer-explorer
+uses `low`, reviewer uses `high`, and debugger, security-reviewer, and
+long-horizon use `xhigh`. When Fable is outside
 the account's allowed model set, Claude Code inherits the current parent; for
 other availability failures, the parent retains
 the outcome. Built-in agents are denied, and a pre-spawn hook rejects unlisted

@@ -238,8 +238,8 @@ def main() -> int:
         "scout": "claude-haiku-4-5-20251001",
         "implementer": "claude-sonnet-5",
         "debugger": "claude-sonnet-5",
-        "reviewer": "claude-opus-5",
-        "security-reviewer": "claude-opus-5",
+        "reviewer": "claude-opus-5-5",
+        "security-reviewer": "claude-opus-5-5",
         "long-horizon": "claude-fable-5",
     }
     for role, model in route_models.items():
@@ -339,8 +339,8 @@ def main() -> int:
             "scout": "claude-haiku-4-5-20251001",
             "implementer": "claude-sonnet-5",
             "debugger": "claude-sonnet-5",
-            "reviewer": "claude-opus-5",
-            "security-reviewer": "claude-opus-5",
+            "reviewer": "claude-opus-5-5",
+            "security-reviewer": "claude-opus-5-5",
             "long-horizon": "claude-fable-5",
         }
         expected_agent_efforts = {
@@ -1148,7 +1148,69 @@ def main() -> int:
         parent_model_path = registration_dir / "parent_model"
         exact_parent_model = parent_model_path.read_text(encoding="utf-8")
         exact_agents_snapshot = agents_path.read_text(encoding="utf-8")
+        opus_root = base / "opus route root"; opus_root.mkdir()
+        opus_env = env.copy()
+        opus_env.update({"CODEX_THREAD_ID": "opus-route-thread", "FAKE_CLAUDE_RECORD": str(base / "opus-route.json"), "CODEX_CLAUDE_PARENT_MODEL": "claude-opus-5-5", "CODEX_CLAUDE_PARENT_ROUTE_CLASS": "judgment", "CODEX_CLAUDE_PARENT_ROUTE_REASON": "independent_review"})
+        opus_env.pop("FAKE_CLAUDE_CHILD_PID", None)
+        opus_worker, opus_master = start_pty([zsh, str(LAUNCHER), str(opus_root)], cwd=opus_root, env=opus_env)
+        opus_output = read_pty(opus_worker, opus_master, needle="CODEX_PTY_WORKER_READY")
+        opus_ready = json.loads(next(line for line in opus_output.splitlines() if "CODEX_PTY_WORKER_READY " in line).split("CODEX_PTY_WORKER_READY ", 1)[1].strip())
+        require(opus_ready["parent_route"] == {"class": "judgment", "reason": "independent_review"}, "documented Opus READY route metadata missing")
+        opus_worker.terminate(); opus_worker.wait(timeout=5); os.close(opus_master)
+        rejected_opus_env = env.copy()
+        rejected_opus_env.update({"CODEX_THREAD_ID": "opus-reject-thread", "FAKE_CLAUDE_RECORD": str(base / "opus-reject.json"), "CODEX_CLAUDE_PARENT_MODEL": "claude-opus-5-5"})
+        rejected_opus, rejected_opus_master = start_pty([zsh, str(LAUNCHER), str(opus_root)], cwd=opus_root, env=rejected_opus_env)
+        rejected_opus_output = read_pty(rejected_opus, rejected_opus_master, timeout=10)
+        rejected_opus.wait(timeout=5); os.close(rejected_opus_master)
+        require(rejected_opus.returncode == 64 and "OPUS_PARENT_ROUTE_REQUIRED" in rejected_opus_output, "unrouted Opus parent was accepted")
+        old_opus_env = env.copy()
+        old_opus_env.update({"CODEX_THREAD_ID": "opus-old-thread", "FAKE_CLAUDE_RECORD": str(base / "opus-old.json"), "CODEX_CLAUDE_PARENT_MODEL": "claude-opus-5", "CODEX_CLAUDE_PARENT_ROUTE_CLASS": "judgment", "CODEX_CLAUDE_PARENT_ROUTE_REASON": "independent_review"})
+        old_opus, old_opus_master = start_pty([zsh, str(LAUNCHER), str(opus_root)], cwd=opus_root, env=old_opus_env)
+        old_opus_output = read_pty(old_opus, old_opus_master, timeout=10)
+        old_opus.wait(timeout=5); os.close(old_opus_master)
+        require(old_opus.returncode == 64 and "INVALID_PARENT_MODEL" in old_opus_output, "new session accepted retired Opus 5 parent")
+
+        legacy_opus_agents = {name: dict(definition) for name, definition in agents.items()}
+        legacy_opus_agents["reviewer"]["model"] = "claude-opus-5"
+        legacy_opus_agents["security-reviewer"]["model"] = "claude-opus-5"
+        agents_path.write_text(json.dumps(legacy_opus_agents, indent=2) + "\n", encoding="utf-8")
+        parent_model_path.write_text("claude-opus-5\n", encoding="utf-8")
+        legacy_opus_record = base / "legacy opus 5 snapshot resume record.json"
+        legacy_opus_env = env.copy()
+        legacy_opus_env["FAKE_CLAUDE_RECORD"] = str(legacy_opus_record)
+        legacy_opus_env.pop("FAKE_CLAUDE_CHILD_PID")
+        legacy_opus_worker, legacy_opus_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--resume", worker_uuid], cwd=repo, env=legacy_opus_env
+        )
+        legacy_opus_output = read_pty(legacy_opus_worker, legacy_opus_master, needle="CODEX_PTY_WORKER_READY")
+        require("CODEX_PTY_WORKER_READY" in legacy_opus_output, f"Opus 5 snapshot did not resume: {legacy_opus_output}")
+        wait_for(legacy_opus_record)
+        legacy_opus_observed = json.loads(legacy_opus_record.read_text(encoding="utf-8"))
+        require(option_value(legacy_opus_observed["argv"], "--model") == "claude-opus-5", "Opus 5 parent snapshot drift")
+        require(
+            json.loads(option_value(legacy_opus_observed["argv"], "--agents")) == legacy_opus_agents,
+            "Opus 5 role snapshot drift",
+        )
+        legacy_opus_worker.terminate()
+        legacy_opus_worker.wait(timeout=5)
+        os.close(legacy_opus_master)
+
+        legacy_opus_agents["security-reviewer"]["model"] = "claude-opus-5-5"
+        agents_path.write_text(json.dumps(legacy_opus_agents, indent=2) + "\n", encoding="utf-8")
+        mixed_opus, mixed_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--resume", worker_uuid], cwd=repo, env=legacy_opus_env
+        )
+        mixed_output = read_pty(mixed_opus, mixed_master, timeout=10)
+        mixed_opus.wait(timeout=5)
+        os.close(mixed_master)
+        require(mixed_opus.returncode == 66 and "WORKER_AGENTS_INVALID" in mixed_output,
+                "resume accepted an inconsistent Opus role pair")
+
+        agents_path.write_text(exact_agents_snapshot, encoding="utf-8")
+        parent_model_path.write_text(exact_parent_model, encoding="utf-8")
         legacy_agents = {name: definition for name, definition in agents.items() if name != "scout"}
+        for role in ("reviewer", "security-reviewer"):
+            legacy_agents[role] = {**legacy_agents[role], "model": "claude-opus-5"}
         agents_path.write_text(json.dumps(legacy_agents, indent=2) + "\n", encoding="utf-8")
         (registration_dir / "runtime_schema_version").write_text("4\n", encoding="utf-8")
         (registration_dir / "health" / "agent_calls_by_role.json").unlink()

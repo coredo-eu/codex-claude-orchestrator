@@ -1,6 +1,6 @@
 ---
 name: claude-pty-agents
-description: Launch and safely retire one bounded Claude Code stage per owned session, with a Sonnet 5 parent by default, role-routed Haiku 4.5/Sonnet 5/Opus 5/Fable 5 subagents, and GPT-5.6 native Codex fallback. Use when Claude is requested or a bounded repository stage benefits from context isolation. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
+description: Launch and safely retire one bounded Claude Code stage per owned session, with a Sonnet 5 parent by default, role-routed Haiku 4.5/Sonnet 5/Opus 5.5/Fable 5 subagents, and GPT-5.6 native Codex fallback. Use when Claude is requested or a bounded repository stage benefits from context isolation. Do not use for routine known-file work, user-launched standalone Claude, or environments without an interactive PTY.
 ---
 
 # Claude PTY agents
@@ -80,7 +80,7 @@ The launcher requires `CODEX_THREAD_ID` and defaults the parent to
 process variables. An Opus override must record a route class and reason:
 
 ```text
-CODEX_CLAUDE_PARENT_MODEL=claude-opus-5
+CODEX_CLAUDE_PARENT_MODEL=claude-opus-5-5
 CODEX_CLAUDE_PARENT_EFFORT=high
 CODEX_CLAUDE_PARENT_ROUTE_CLASS=judgment
 CODEX_CLAUDE_PARENT_ROUTE_REASON=independent_review
@@ -90,7 +90,7 @@ The launcher passes a private session-scoped `--agents` roster. Explorer,
 log-analyzer, test-triager, and scout use `claude-haiku-4-5-20251001`; scout is
 for bounded read-only local operational reconnaissance. Implementer and debugger
 use `claude-sonnet-5`; reviewer and security-reviewer use
-`claude-opus-5`. Long-horizon uses `claude-fable-5`. The ordinary Sonnet parent
+`claude-opus-5-5`. Long-horizon uses `claude-fable-5`. The ordinary Sonnet parent
 starts at `high` effort. Haiku roles use the model's fixed behavior because Haiku 4.5 has
 no configurable effort; implementer uses `high`, reviewer uses `medium`, and
 debugger, security-reviewer, and long-horizon use `xhigh`. When Fable is outside

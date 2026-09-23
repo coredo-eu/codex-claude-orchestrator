@@ -99,8 +99,8 @@ def main() -> int:
         "test-triager": "claude-haiku-4-5-20251001",
         "implementer": "claude-sonnet-5",
         "debugger": "claude-sonnet-5",
-        "reviewer": "claude-opus-5",
-        "security-reviewer": "claude-opus-5",
+        "reviewer": "claude-opus-5-5",
+        "security-reviewer": "claude-opus-5-5",
         "long-horizon": "claude-fable-5",
     }
     expected_agent_efforts = {

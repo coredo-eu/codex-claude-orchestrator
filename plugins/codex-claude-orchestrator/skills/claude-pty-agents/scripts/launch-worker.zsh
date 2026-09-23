@@ -270,11 +270,11 @@ fi
 
 cco_validate_model "$parent_model" || cco_die 64 "INVALID_PARENT_MODEL"
 if [[ "$mode" == "new" ]]; then
-  [[ "$parent_model" == "claude-sonnet-5" || "$parent_model" == "claude-opus-5" || "$parent_model" == "sonnet" || "$parent_model" == "opus" ]] || cco_die 64 "INVALID_PARENT_MODEL"
+  [[ "$parent_model" == "claude-sonnet-5" || "$parent_model" == "claude-opus-5-5" || "$parent_model" == "sonnet" || "$parent_model" == "opus" ]] || cco_die 64 "INVALID_PARENT_MODEL"
   cco_validate_parent_effort "$parent_effort" || cco_die 64 "INVALID_PARENT_EFFORT"
   cco_validate_route_token "$parent_route_class" || cco_die 64 "INVALID_PARENT_ROUTE_CLASS"
   cco_validate_route_token "$parent_route_reason" || cco_die 64 "INVALID_PARENT_ROUTE_REASON"
-  if [[ "$parent_model" == "claude-opus-5" || "$parent_model" == "opus" ]]; then
+  if [[ "$parent_model" == "claude-opus-5-5" || "$parent_model" == "opus" ]]; then
     [[ "${CODEX_CLAUDE_PARENT_ROUTE_CLASS:-}" == "judgment" || "${CODEX_CLAUDE_PARENT_ROUTE_CLASS:-}" == "review" ]] || \
       cco_die 64 "OPUS_PARENT_ROUTE_REQUIRED"
     [[ "${CODEX_CLAUDE_PARENT_ROUTE_REASON:-}" == "material_judgment" || "${CODEX_CLAUDE_PARENT_ROUTE_REASON:-}" == "independent_review" ]] || \
@@ -576,7 +576,7 @@ if [[ "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" 
   agents_json=$(<"$runtime_agents")
   agent_models=$("$CCO_JQ" -c 'with_entries(.value = .value.model)' "$runtime_agents")
 elif [[ "$runtime_schema" == "6" ]]; then
-  "$CCO_JQ" -e '
+  "$CCO_JQ" -e --argjson legacy_opus "$([[ "$mode" == "new" ]] && print -r -- false || print -r -- true)" '
     type == "object" and
     (keys | sort) == [
       "codeindexer-explorer", "debugger", "explorer", "implementer", "log-analyzer",
@@ -591,8 +591,8 @@ elif [[ "$runtime_schema" == "6" ]]; then
         .implementer.model == "claude-sonnet-5" and
         .debugger.model == "claude-sonnet-5" and
         .["codeindexer-explorer"].model == "claude-sonnet-5" and
-        .reviewer.model == "claude-opus-5" and
-        .["security-reviewer"].model == "claude-opus-5" and
+        .reviewer.model == .["security-reviewer"].model and
+        (.reviewer.model == "claude-opus-5-5" or (.reviewer.model == "claude-opus-5" and $legacy_opus)) and
         .["long-horizon"].model == "claude-fable-5" and
         (.explorer | has("effort") | not) and
         (.scout | has("effort") | not) and

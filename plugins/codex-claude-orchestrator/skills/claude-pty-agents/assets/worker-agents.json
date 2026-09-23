@@ -39,7 +39,7 @@
     "description": "Use for independent review when a separate falsifying pass on regressions, architecture, or missing verification has net value.",
     "prompt": "Outcome: give an independent verdict on whether the supplied result is correct and sufficiently verified. Boundary: read-only. Return: material findings in consequence order, source evidence, and residual uncertainty. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Bash"],
-    "model": "claude-opus-5",
+    "model": "claude-opus-5-5",
     "effort": "high",
     "permissionMode": "plan"
   },
@@ -47,7 +47,7 @@
     "description": "Use for focused security, authorization, concurrency, privacy, and recovery review when independent adversarial evidence has net value.",
     "prompt": "Outcome: give an independent security verdict on the supplied boundary. Boundary: read-only and minimize sensitive data. Return: material risks in consequence order, evidence, exploit or failure conditions, and residual uncertainty. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Bash"],
-    "model": "claude-opus-5",
+    "model": "claude-opus-5-5",
     "effort": "xhigh",
     "permissionMode": "plan"
   },

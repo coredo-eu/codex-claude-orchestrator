@@ -240,7 +240,7 @@ def main() -> int:
         "debugger": "claude-sonnet-5",
         "reviewer": "claude-opus-5-5",
         "security-reviewer": "claude-opus-5-5",
-        "long-horizon": "claude-fable-5",
+        "long-horizon": "claude-fable-5-1",
     }
     for role, model in route_models.items():
         for supplied_model in (None, model):
@@ -264,6 +264,13 @@ def main() -> int:
                 "hook_event_name": "PreToolUse",
                 "tool_name": "Agent",
                 "tool_input": {"subagent_type": "explorer", "model": "opus"},
+            }
+        ),
+        json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "long-horizon", "model": "claude-fable-5"},
             }
         ),
         json.dumps(
@@ -341,7 +348,7 @@ def main() -> int:
             "debugger": "claude-sonnet-5",
             "reviewer": "claude-opus-5-5",
             "security-reviewer": "claude-opus-5-5",
-            "long-horizon": "claude-fable-5",
+            "long-horizon": "claude-fable-5-1",
         }
         expected_agent_efforts = {
             "explorer": None,
@@ -1206,11 +1213,37 @@ def main() -> int:
         require(mixed_opus.returncode == 66 and "WORKER_AGENTS_INVALID" in mixed_output,
                 "resume accepted an inconsistent Opus role pair")
 
+        # A session registered before the Fable 5.1 route keeps its pinned
+        # long-horizon snapshot on resume; only new workers get the new roster.
+        legacy_fable_agents = {name: dict(definition) for name, definition in agents.items()}
+        legacy_fable_agents["long-horizon"]["model"] = "claude-fable-5"
+        agents_path.write_text(json.dumps(legacy_fable_agents, indent=2) + "\n", encoding="utf-8")
+        parent_model_path.write_text(exact_parent_model, encoding="utf-8")
+        legacy_fable_record = base / "legacy fable 5 snapshot resume record.json"
+        legacy_fable_env = env.copy()
+        legacy_fable_env["FAKE_CLAUDE_RECORD"] = str(legacy_fable_record)
+        legacy_fable_env.pop("FAKE_CLAUDE_CHILD_PID")
+        legacy_fable_worker, legacy_fable_master = start_pty(
+            [zsh, str(LAUNCHER), str(repo), "--resume", worker_uuid], cwd=repo, env=legacy_fable_env
+        )
+        legacy_fable_output = read_pty(legacy_fable_worker, legacy_fable_master, needle="CODEX_PTY_WORKER_READY")
+        require("CODEX_PTY_WORKER_READY" in legacy_fable_output, f"Fable 5 snapshot did not resume: {legacy_fable_output}")
+        wait_for(legacy_fable_record)
+        legacy_fable_observed = json.loads(legacy_fable_record.read_text(encoding="utf-8"))
+        require(
+            json.loads(option_value(legacy_fable_observed["argv"], "--agents")) == legacy_fable_agents,
+            "Fable 5 role snapshot drift",
+        )
+        legacy_fable_worker.terminate()
+        legacy_fable_worker.wait(timeout=5)
+        os.close(legacy_fable_master)
+
         agents_path.write_text(exact_agents_snapshot, encoding="utf-8")
         parent_model_path.write_text(exact_parent_model, encoding="utf-8")
         legacy_agents = {name: definition for name, definition in agents.items() if name != "scout"}
         for role in ("reviewer", "security-reviewer"):
             legacy_agents[role] = {**legacy_agents[role], "model": "claude-opus-5"}
+        legacy_agents["long-horizon"] = {**legacy_agents["long-horizon"], "model": "claude-fable-5"}
         agents_path.write_text(json.dumps(legacy_agents, indent=2) + "\n", encoding="utf-8")
         (registration_dir / "runtime_schema_version").write_text("4\n", encoding="utf-8")
         (registration_dir / "health" / "agent_calls_by_role.json").unlink()

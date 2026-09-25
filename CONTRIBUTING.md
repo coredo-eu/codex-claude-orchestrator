@@ -23,9 +23,9 @@ Runtime changes should preserve these invariants:
 - native fallback never overlaps a live Claude writer;
 - retirement permanently blocks that assignment from Claude resume;
 - the kill-switch marker is the only enabled/disabled state;
-- schema-2 workers snapshot the exact session-scoped agent roster and clear any
+- schema-2 and later workers snapshot the exact session-scoped agent roster and clear any
   inherited global Claude subagent-model override;
-- schema-2 routing rejects unlisted roles and mismatched per-invocation model
+- schema-2 and later routing rejects unlisted roles and mismatched per-invocation model
   overrides before the Agent tool runs;
 - the published per-role model and reasoning map changes only with tests and
   documentation in the same pull request;

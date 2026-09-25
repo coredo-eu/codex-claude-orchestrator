@@ -576,7 +576,7 @@ if [[ "$runtime_schema" == "2" || "$runtime_schema" == "3" || "$runtime_schema" 
   agents_json=$(<"$runtime_agents")
   agent_models=$("$CCO_JQ" -c 'with_entries(.value = .value.model)' "$runtime_agents")
 elif [[ "$runtime_schema" == "6" ]]; then
-  "$CCO_JQ" -e --argjson legacy_opus "$([[ "$mode" == "new" ]] && print -r -- false || print -r -- true)" '
+  "$CCO_JQ" -e --argjson legacy_routes "$([[ "$mode" == "new" ]] && print -r -- false || print -r -- true)" '
     type == "object" and
     (keys | sort) == [
       "codeindexer-explorer", "debugger", "explorer", "implementer", "log-analyzer",
@@ -592,8 +592,8 @@ elif [[ "$runtime_schema" == "6" ]]; then
         .debugger.model == "claude-sonnet-5" and
         .["codeindexer-explorer"].model == "claude-sonnet-5" and
         .reviewer.model == .["security-reviewer"].model and
-        (.reviewer.model == "claude-opus-5-5" or (.reviewer.model == "claude-opus-5" and $legacy_opus)) and
-        .["long-horizon"].model == "claude-fable-5" and
+        (.reviewer.model == "claude-opus-5-5" or (.reviewer.model == "claude-opus-5" and $legacy_routes)) and
+        (.["long-horizon"].model == "claude-fable-5-1" or (.["long-horizon"].model == "claude-fable-5" and $legacy_routes)) and
         (.explorer | has("effort") | not) and
         (.scout | has("effort") | not) and
         (.["log-analyzer"] | has("effort") | not) and

@@ -101,7 +101,7 @@ def main() -> int:
         "debugger": "claude-sonnet-5",
         "reviewer": "claude-opus-5-5",
         "security-reviewer": "claude-opus-5-5",
-        "long-horizon": "claude-fable-5",
+        "long-horizon": "claude-fable-5-1",
     }
     expected_agent_efforts = {
         "explorer": None,

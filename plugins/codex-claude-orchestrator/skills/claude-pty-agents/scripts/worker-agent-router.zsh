@@ -22,7 +22,7 @@ case "$role" in
   implementer|debugger) expected_model="claude-sonnet-5" ;;
   codeindexer-explorer) expected_model="claude-sonnet-5" ;;
   reviewer|security-reviewer) expected_model="claude-opus-5-5" ;;
-  long-horizon) expected_model="claude-fable-5" ;;
+  long-horizon) expected_model="claude-fable-5-1" ;;
   *) deny ;;
 esac
 

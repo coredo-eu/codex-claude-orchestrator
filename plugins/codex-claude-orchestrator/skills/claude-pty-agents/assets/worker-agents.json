@@ -55,7 +55,7 @@
     "description": "Use only after an explicit long-horizon route and explicit sole edit custody for an exceptionally large autonomous outcome; Fable is preferred and Opus is the availability fallback.",
     "prompt": "Outcome: make the exceptionally large supplied Done when true. Boundary: you hold the explicit sole edit scope, preserve unrelated changes, and remain within higher authority limits. Return: achieved result, decisive evidence, material risk or uncertainty, and custody. Choose the method.",
     "tools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
-    "model": "claude-fable-5",
+    "model": "claude-fable-5-1",
     "effort": "xhigh"
   },
   "scout": {
